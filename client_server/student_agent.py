@@ -229,7 +229,18 @@ def get_valid_moves_for_piece(board: list[list[any]], start_pos_x: int, start_po
 
     return all_possible_actions
 
-
+def _are_boards_the_same(board1, board2, rows, cols):
+    """Checks if two board states are identical."""
+    if not board1 or not board2: return False
+    for r in range(rows):
+        for c in range(cols):
+            p1 = board1[r][c]
+            p2 = board2[r][c]
+            if p1 is None and p2 is None: continue
+            if p1 is None or p2 is None: return False
+            if p1.owner != p2.owner or p1.side != p2.side or p1.orientation != p2.orientation:
+                return False
+    return True
 
 def generate_all_moves(board: List[List[Any]], player: str, rows: int, cols: int, score_cols: List[int]) -> List[Dict[str, Any]]:
     """
