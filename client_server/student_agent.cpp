@@ -367,6 +367,293 @@ double basic_evaluate_board(const Board& board, const string& player, int rows, 
     return score;
 }
 
+// ==================== ENHANCED BOARD EVALUATION IMPLEMENTATION ====================
+
+/**
+ * @brief Count stones that can reach scoring area in one move
+ */
+int count_stones_one_move_from_scoring(const Board& board, const string& player, int rows, int cols, const vector<int>& score_cols) {
+    int count = 0;
+    int score_row = (player == "circle") ? top_score_row() : bottom_score_row(rows);
+    
+    // Check adjacent positions to scoring area
+    vector<pair<int, int>> adjacent_positions;
+    for (int x : score_cols) {
+        // Add positions above and below scoring row
+        if (in_bounds(x, score_row - 1, rows, cols)) {
+            adjacent_positions.push_back({x, score_row - 1});
+        }
+        if (in_bounds(x, score_row + 1, rows, cols)) {
+            adjacent_positions.push_back({x, score_row + 1});
+        }
+    }
+    
+    // Add positions to the left and right of scoring area
+    for (int y = score_row; y == score_row; ++y) {
+        if (score_cols.size() > 0) {
+            int leftmost = score_cols[0];
+            int rightmost = score_cols[score_cols.size() - 1];
+            
+            if (in_bounds(leftmost - 1, y, rows, cols)) {
+                adjacent_positions.push_back({leftmost - 1, y});
+            }
+            if (in_bounds(rightmost + 1, y, rows, cols)) {
+                adjacent_positions.push_back({rightmost + 1, y});
+            }
+        }
+    }
+    
+    // Check each adjacent position for player's stones
+    for (auto [x, y] : adjacent_positions) {
+        const Piece* piece = board[y][x].get();
+        if (piece && piece->owner == player && piece->side == "stone") {
+            count++;
+        }
+    }
+    
+    return count;
+}
+
+/**
+ * @brief Calculate mobility score based on available moves
+ */
+double calculate_mobility_score(const Board& board, const string& player, int rows, int cols, const vector<int>& score_cols) {
+    auto moves = generate_all_moves(board, player, rows, cols, score_cols);
+    return moves.size() * 0.5; // Weight mobility appropriately
+}
+
+/**
+ * @brief Evaluate piece positioning and formation
+ */
+double evaluate_piece_positioning(const Board& board, const string& player, int rows, int cols, const vector<int>& score_cols) {
+    double score = 0.0;
+    int target_row = (player == "circle") ? top_score_row() : bottom_score_row(rows);
+    
+    for (int y = 0; y < rows; ++y) {
+        for (int x = 0; x < cols; ++x) {
+            const Piece* piece = board[y][x].get();
+            if (piece && piece->owner == player) {
+                if (piece->side == "stone") {
+                    // Reward stones closer to scoring area
+                    double distance_bonus = 0.0;
+                    if (player == "circle") {
+                        // Circle wants to move down (increasing y)
+                        distance_bonus = (double)(rows - y) / rows * 5.0;
+                    } else {
+                        // Square wants to move up (decreasing y)
+                        distance_bonus = (double)y / rows * 5.0;
+                    }
+                    score += distance_bonus;
+                    
+                    // Bonus for stones in scoring columns
+                    if (find(score_cols.begin(), score_cols.end(), x) != score_cols.end()) {
+                        score += 3.0;
+                    }
+                    
+                    // Penalty for stones far from center columns
+                    int center_x = cols / 2;
+                    double center_distance = abs(x - center_x);
+                    score -= center_distance * 0.2;
+                    
+                } else { // River piece
+                    // Evaluate river positioning
+                    // Rivers are valuable for enabling movement
+                    score += 2.0;
+                    
+                    // Bonus for rivers that create pathways toward scoring area
+                    if (piece->orientation == "horizontal") {
+                        // Horizontal rivers help lateral movement
+                        score += 1.5;
+                    } else {
+                        // Vertical rivers help forward/backward movement
+                        if (player == "circle" && y < target_row) {
+                            score += 2.0; // Helps circle move toward their goal
+                        } else if (player == "square" && y > target_row) {
+                            score += 2.0; // Helps square move toward their goal
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    return score;
+}
+
+/**
+ * @brief Evaluate control of key board areas
+ */
+double evaluate_board_control(const Board& board, const string& player, int rows, int cols, const vector<int>& score_cols) {
+    double score = 0.0;
+    string opponent = get_opponent(player);
+    
+    // Control of center area
+    int center_x = cols / 2;
+    int center_y = rows / 2;
+    
+    for (int y = center_y - 2; y <= center_y + 2; ++y) {
+        for (int x = center_x - 2; x <= center_x + 2; ++x) {
+            if (in_bounds(x, y, rows, cols)) {
+                const Piece* piece = board[y][x].get();
+                if (piece) {
+                    if (piece->owner == player) {
+                        score += 1.0;
+                    } else if (piece->owner == opponent) {
+                        score -= 0.5;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Control of scoring approach lanes
+    for (int x : score_cols) {
+        int approach_row = (player == "circle") ? top_score_row() + 1 : bottom_score_row(rows) - 1;
+        if (in_bounds(x, approach_row, rows, cols)) {
+            const Piece* piece = board[approach_row][x].get();
+            if (piece && piece->owner == player) {
+                score += 3.0;
+            }
+        }
+    }
+    
+    return score;
+}
+
+/**
+ * @brief Evaluate defensive positioning
+ */
+double evaluate_defensive_position(const Board& board, const string& player, int rows, int cols, const vector<int>& score_cols) {
+    double score = 0.0;
+    string opponent = get_opponent(player);
+    
+    // Check if opponent stones are threatening our scoring area
+    int our_score_row = (player == "circle") ? top_score_row() : bottom_score_row(rows);
+    
+    // Count opponent threats
+    int opponent_threats = count_stones_one_move_from_scoring(board, opponent, rows, cols, score_cols);
+    score -= opponent_threats * 8.0; // Heavy penalty for opponent threats
+    
+    // Bonus for blocking opponent paths
+    for (int x : score_cols) {
+        // Check positions that could block opponent approach
+        int block_row = (player == "circle") ? top_score_row() - 1 : bottom_score_row(rows) + 1;
+        if (in_bounds(x, block_row, rows, cols)) {
+            const Piece* piece = board[block_row][x].get();
+            if (piece && piece->owner == player) {
+                score += 2.0;
+            }
+        }
+    }
+    
+    return score;
+}
+
+/**
+ * @brief Check for immediate winning or losing positions
+ */
+double evaluate_immediate_threats(const Board& board, const string& player, int rows, int cols, const vector<int>& score_cols) {
+    double score = 0.0;
+    
+    int player_stones = count_stones_in_scoring_area(board, player, rows, cols, score_cols);
+    int opponent_stones = count_stones_in_scoring_area(board, get_opponent(player), rows, cols, score_cols);
+    
+    // Massive bonus/penalty for being close to winning/losing
+    if (player_stones == 3) {
+        score += 500.0; // Very close to winning
+    } else if (player_stones == 2) {
+        score += 150.0;
+    }
+    
+    if (opponent_stones == 3) {
+        score -= 600.0; // Opponent very close to winning - defend!
+    } else if (opponent_stones == 2) {
+        score -= 200.0;
+    }
+    
+    return score;
+}
+
+/**
+ * @brief Comprehensive board evaluation function
+ */
+double advanced_evaluate_board(const Board& board, const string& player, int rows, int cols, const vector<int>& score_cols) {
+    double total_score = 0.0;
+    string opponent = get_opponent(player);
+    
+    // 1. Primary scoring metric - stones in scoring area (highest weight)
+    int player_scoring_stones = count_stones_in_scoring_area(board, player, rows, cols, score_cols);
+    int opponent_scoring_stones = count_stones_in_scoring_area(board, opponent, rows, cols, score_cols);
+    total_score += player_scoring_stones * 1000.0;
+    total_score -= opponent_scoring_stones * 1000.0;
+    
+    // 2. Secondary scoring metric - stones one move from scoring
+    int player_ready_stones = count_stones_one_move_from_scoring(board, player, rows, cols, score_cols);
+    int opponent_ready_stones = count_stones_one_move_from_scoring(board, opponent, rows, cols, score_cols);
+    total_score += player_ready_stones * 50.0;
+    total_score -= opponent_ready_stones * 50.0;
+    
+    // 3. Immediate threat evaluation (game-ending positions)
+    total_score += evaluate_immediate_threats(board, player, rows, cols, score_cols);
+    
+    // 4. Piece positioning and formation
+    total_score += evaluate_piece_positioning(board, player, rows, cols, score_cols);
+    total_score -= evaluate_piece_positioning(board, opponent, rows, cols, score_cols) * 0.8;
+    
+    // 5. Board control and territorial advantage
+    total_score += evaluate_board_control(board, player, rows, cols, score_cols);
+    
+    // 6. Defensive positioning
+    total_score += evaluate_defensive_position(board, player, rows, cols, score_cols);
+    
+    // 7. Mobility and tactical flexibility
+    total_score += calculate_mobility_score(board, player, rows, cols, score_cols);
+    total_score -= calculate_mobility_score(board, opponent, rows, cols, score_cols) * 0.7;
+    
+    // 8. Endgame considerations
+    int total_stones_in_play = 0;
+    for (int y = 0; y < rows; ++y) {
+        for (int x = 0; x < cols; ++x) {
+            if (board[y][x] != nullptr) {
+                total_stones_in_play++;
+            }
+        }
+    }
+    
+    // In endgame (fewer pieces), prioritize direct scoring paths
+    if (total_stones_in_play < 16) {
+        total_score += player_ready_stones * 30.0; // Extra bonus for ready stones
+        total_score -= opponent_ready_stones * 35.0; // Extra penalty for opponent ready stones
+    }
+    
+    return total_score;
+}
+
+/**
+ * @brief Quick evaluation function for time-critical situations
+ */
+double quick_evaluate_board(const Board& board, const string& player, int rows, int cols, const vector<int>& score_cols) {
+    double score = 0.0;
+    string opponent = get_opponent(player);
+    
+    // Focus only on most critical factors
+    int player_scoring = count_stones_in_scoring_area(board, player, rows, cols, score_cols);
+    int opponent_scoring = count_stones_in_scoring_area(board, opponent, rows, cols, score_cols);
+    int player_ready = count_stones_one_move_from_scoring(board, player, rows, cols, score_cols);
+    int opponent_ready = count_stones_one_move_from_scoring(board, opponent, rows, cols, score_cols);
+    
+    score += player_scoring * 1000.0;
+    score -= opponent_scoring * 1000.0;
+    score += player_ready * 50.0;
+    score -= opponent_ready * 50.0;
+    
+    // Quick threat assessment
+    if (opponent_scoring == 3) score -= 500.0;
+    if (player_scoring == 3) score += 400.0;
+    
+    return score;
+}
+
 // ==================== SIMULATION & AGENT IMPLEMENTATION ====================
 
 /**
