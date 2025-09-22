@@ -201,7 +201,7 @@ vector<pair<int, int>> _trace_river_flow(
                     }
                     break;
                 }
-                break;
+                break; // Stop if it's a stone
             }
         }
     }
@@ -210,7 +210,7 @@ vector<pair<int, int>> _trace_river_flow(
 
 
 /**
- * @brief Computes all valid moves for a single piece.
+ * @brief Computes all valid moves for a single piece based on assignment rules.
  */
 vector<Move> get_valid_moves_for_piece(
     const Board& board, int start_pos_x, int start_pos_y,
@@ -224,7 +224,6 @@ vector<Move> get_valid_moves_for_piece(
     }
     
     // --- Part 1: Calculate Moves and Pushes ---
-    // Directions to check: right, left, down, up
     vector<pair<int, int>> move_options = {{1, 0}, {-1, 0}, {0, -1}, {0, 1}};
 
     for (auto [dx, dy] : move_options) {
@@ -238,22 +237,29 @@ vector<Move> get_valid_moves_for_piece(
         const Piece* target_square = board[target_y][target_x].get();
 
         if (target_square == nullptr) {
+            // Simple move to an empty square
             all_possible_actions.push_back({ "move", {start_pos_x, start_pos_y}, {{target_x, target_y}}, nullopt, nullopt });
         } else if (target_square->side == "river") {
+            // Move along a river
             auto river_landings = _trace_river_flow(board, target_x, target_y, start_pos_x, start_pos_y, current_player, rows, cols, score_cols);
             for (auto [lx, ly] : river_landings) {
                  all_possible_actions.push_back({ "move", {start_pos_x, start_pos_y}, {{lx, ly}}, nullopt, nullopt });
             }
-        } else { // Target is a stone, so it's a push move
+        } else if (target_square->side == "stone") { 
+            // **CORRECTION**: A push is only possible if the target piece is a stone.
+            
             if (my_piece->side == "stone") {
+                // **Stone Pushing a Stone**
                 int push_dest_x = target_x + dx;
                 int push_dest_y = target_y + dy;
+                // Check if the destination square is empty and valid
                 if (in_bounds(push_dest_x, push_dest_y, rows, cols) && board[push_dest_y][push_dest_x] == nullptr) {
                     if (!is_opponent_score_cell(push_dest_x, push_dest_y, current_player, rows, cols, score_cols)) {
                         all_possible_actions.push_back({ "push", {start_pos_x, start_pos_y}, {{target_x, target_y}}, {{push_dest_x, push_dest_y}}, nullopt });
                     }
                 }
-            } else { // River pushing a stone
+            } else { // my_piece is a river
+                // **River Pushing a Stone**
                 string owner_of_pushed_piece = target_square->owner;
                 auto river_landings = _trace_river_flow(board, target_x, target_y, start_pos_x, start_pos_y, owner_of_pushed_piece, rows, cols, score_cols, true);
                 for (auto [lx, ly] : river_landings) {
@@ -265,10 +271,13 @@ vector<Move> get_valid_moves_for_piece(
     
     // --- Part 2: Add Flip and Rotate Actions ---
     if (my_piece->side == "stone") {
+        // A stone can be flipped to a river (horizontal or vertical)
         all_possible_actions.push_back({ "flip", {start_pos_x, start_pos_y}, nullopt, nullopt, "horizontal" });
         all_possible_actions.push_back({ "flip", {start_pos_x, start_pos_y}, nullopt, nullopt, "vertical" });
     } else { // The piece is a river
+        // A river can be flipped to a stone
         all_possible_actions.push_back({ "flip", {start_pos_x, start_pos_y}, nullopt, nullopt, nullopt });
+        // A river can also be rotated
         all_possible_actions.push_back({ "rotate", {start_pos_x, start_pos_y}, nullopt, nullopt, nullopt });
     }
 
@@ -399,6 +408,7 @@ pair<bool, string> validate_and_apply_move(
     } else if (move.action == "push") {
         auto [to_x, to_y] = move.to.value();
         auto [pushed_to_x, pushed_to_y] = move.pushed_to.value();
+        // The rule that the pushing river flips to a stone would be implemented here in a full game engine.
         board[pushed_to_y][pushed_to_x] = std::move(board[to_y][to_x]);
         board[to_y][to_x] = std::move(board[from_y][from_x]);
     } else if (move.action == "flip") {
