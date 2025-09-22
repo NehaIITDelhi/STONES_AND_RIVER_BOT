@@ -128,6 +128,7 @@ string get_opponent(const string& player) {
 /**
  * @brief Helper function to trace all possible paths along a river or a chain of rivers.
  */
+
 vector<pair<int, int>> _trace_river_flow(
     const Board& board, int river_start_x, int river_start_y,
     int original_piece_x, int original_piece_y, const string& whos_turn,
@@ -370,48 +371,50 @@ double basic_evaluate_board(const Board& board, const string& player, int rows, 
 // ==================== ENHANCED BOARD EVALUATION IMPLEMENTATION ====================
 
 /**
- * @brief Count stones that can reach scoring area in one move
+ * @brief Count stones that can reach scoring area in one step
  */
 int count_stones_one_move_from_scoring(const Board& board, const string& player, int rows, int cols, const vector<int>& score_cols) {
-    int count = 0;
-    int score_row = (player == "circle") ? top_score_row() : bottom_score_row(rows);
-    
-    // Check adjacent positions to scoring area
-    vector<pair<int, int>> adjacent_positions;
-    for (int x : score_cols) {
-        // Add positions above and below scoring row
-        if (in_bounds(x, score_row - 1, rows, cols)) {
-            adjacent_positions.push_back({x, score_row - 1});
-        }
-        if (in_bounds(x, score_row + 1, rows, cols)) {
-            adjacent_positions.push_back({x, score_row + 1});
-        }
-    }
-    
-    // Add positions to the left and right of scoring area
-    for (int y = score_row; y == score_row; ++y) {
-        if (score_cols.size() > 0) {
-            int leftmost = score_cols[0];
-            int rightmost = score_cols[score_cols.size() - 1];
-            
-            if (in_bounds(leftmost - 1, y, rows, cols)) {
-                adjacent_positions.push_back({leftmost - 1, y});
+    int threat_count = 0;
+    for (int y = 0; y < rows; ++y) {
+        for (int x = 0; x < cols; ++x) {
+            const auto& piece = board[y][x];
+            if (piece && piece->owner == player) {
+                // Generate all possible moves for this single piece
+                // This requires a full move generator, which is assumed to exist.
+                vector<Move> possible_moves = get_valid_moves_for_piece(board, x, y, player, rows, cols, score_cols);
+
+                for (const auto& move : possible_moves) {
+                    bool is_a_threat = false;
+                    if (move.action == "move" && move.to.has_value()) {
+                        if (is_own_score_cell(move.to->first, move.to->second, player, rows, cols, score_cols)) {
+                            is_a_threat = true;
+                        }
+                    } else if (move.action == "push" && move.pushed_to.has_value()) {
+                        // A push is a threat if the piece *being pushed* lands in the goal.
+                        // We also need to check if that piece is a stone.
+                        auto pushed_coord = move.to.value();
+                        const auto& pushed_piece = board[pushed_coord.second][pushed_coord.first];
+                        if (pushed_piece && pushed_piece->side == "stone") {
+                             if (is_own_score_cell(move.pushed_to->first, move.pushed_to->second, player, rows, cols, score_cols)) {
+                                is_a_threat = true;
+                            }
+                        }
+                    } else if (move.action == "flip") {
+                        // A flip is a threat if the piece is already in the scoring area and is a river.
+                        if(piece->side == "river" && is_own_score_cell(x, y, player, rows, cols, score_cols)){
+                            is_a_threat = true;
+                        }
+                    }
+                    
+                    if(is_a_threat){
+                        threat_count++;
+                        break; // Count this piece only once, even if it has multiple ways to score.
+                    }
+                }
             }
-            if (in_bounds(rightmost + 1, y, rows, cols)) {
-                adjacent_positions.push_back({rightmost + 1, y});
-            }
         }
     }
-    
-    // Check each adjacent position for player's stones
-    for (auto [x, y] : adjacent_positions) {
-        const Piece* piece = board[y][x].get();
-        if (piece && piece->owner == player && piece->side == "stone") {
-            count++;
-        }
-    }
-    
-    return count;
+    return threat_count;
 }
 
 /**
