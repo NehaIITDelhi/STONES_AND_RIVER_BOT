@@ -23,6 +23,9 @@ from abc import ABC, abstractmethod
 # ==================== GAME UTILITIES ====================
 # Essential utility functions for game state analysis
 
+
+# rectangle in top of the grid and circle in bottom
+
 def in_bounds(x: int, y: int, rows: int, cols: int) -> bool:
     """Check if coordinates are within board boundaries."""
     return 0 <= x < cols and 0 <= y < rows
@@ -36,6 +39,7 @@ def score_cols_for(cols: int) -> List[int]:
 def top_score_row() -> int:
     """Get the row index for Circle's scoring area."""
     return 2
+    # because the starting two rows are empty
 
 def bottom_score_row(rows: int) -> int:
     """Get the row index for Square's scoring area."""
@@ -60,6 +64,91 @@ def get_opponent(player: str) -> str:
     return "square" if player == "circle" else "circle"
 
 # ==================== MOVE GENERATION HELPERS ====================
+
+
+
+def _trace_river_flow(board: list[list[any]],
+                      river_start_x: int, river_start_y: int,
+                      original_piece_x: int, original_piece_y: int,
+                      whos_turn: str,
+                      rows: int, cols: int, score_cols: list[int],
+                      is_a_push_move: bool = False) -> list[tuple[int, int]]:
+    """
+    Helper function to trace all possible paths along a river or a chain of rivers.
+    It figures out all the empty spots a piece could land on.
+    """
+    possible_landings = []
+    
+    # A list of coordinates we need to check for rivers
+    coords_to_check = [(river_start_x, river_start_y)]
+    
+    # A set to keep track of river coordinates we've already processed
+    checked_coords = set()
+
+    while coords_to_check:
+        current_x, current_y = coords_to_check.pop(0)
+
+        # Skip if we've already looked at this river piece or if it's off the board
+        if (current_x, current_y) in checked_coords or not in_bounds(current_x, current_y, rows, cols):
+            continue
+        checked_coords.add((current_x, current_y))
+
+        current_cell = board[current_y][current_x]
+        
+        # Special case for river pushes: the 'river' is actually the piece being pushed
+        if is_a_push_move and current_x == river_start_x and current_y == river_start_y:
+            current_cell = board[original_piece_y][original_piece_x]
+
+        if current_cell is None:
+            # This can happen if a river flows into an empty space
+            if not is_opponent_score_cell(current_x, current_y, whos_turn, rows, cols, score_cols):
+                if (current_x, current_y) not in possible_landings:
+                     possible_landings.append((current_x, current_y))
+            continue # Can't flow from an empty cell
+
+        # If we hit a stone, the flow stops here
+        if not hasattr(current_cell, 'side') or current_cell.side != "river":
+            continue
+
+        # Check horizontal or vertical flow based on the river's orientation
+        flow_directions = [(1, 0), (-1, 0)] if current_cell.orientation == "horizontal" else [(0, 1), (-1, 0)]
+        
+        for move_x, move_y in flow_directions:
+            new_x, new_y = current_x + move_x, current_y + move_y
+            
+            # Keep moving in one direction until we hit something or go off-board
+            while in_bounds(new_x, new_y, rows, cols):
+                # Stop if the path enters the opponent's goal
+                if is_opponent_score_cell(new_x, new_y, whos_turn, rows, cols, score_cols):
+                    break
+
+                cell_in_path = board[new_y][new_x]
+
+                if cell_in_path is None:
+                    # Found an empty spot, it's a valid place to land
+                    if (new_x, new_y) not in possible_landings:
+                        possible_landings.append((new_x, new_y))
+                    new_x += move_x # Keep checking further along the path
+                    new_y += move_y
+                    continue
+
+                # Don't check the spot where the piece started its move
+                if new_x == original_piece_x and new_y == original_piece_y:
+                    new_x += move_x
+                    new_y += move_y
+                    continue
+                
+                # If we hit another river, add it to our list to check later
+                if hasattr(cell_in_path, 'side') and cell_in_path.side == "river":
+                    if (new_x, new_y) not in checked_coords:
+                        coords_to_check.append((new_x, new_y))
+                    break # Stop this direction, the new river will be checked from the queue
+
+                # If we hit a stone, the path is blocked
+                break
+                
+    return possible_landings
+
 
 def get_valid_moves_for_piece(board, x: int, y: int, player: str, rows: int, cols: int, score_cols: List[int]) -> List[Dict[str, Any]]:
     """
