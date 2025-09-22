@@ -150,61 +150,86 @@ def _trace_river_flow(board: list[list[any]],
     return possible_landings
 
 
-def get_valid_moves_for_piece(board, x: int, y: int, player: str, rows: int, cols: int, score_cols: List[int]) -> List[Dict[str, Any]]:
+def get_valid_moves_for_piece(board: list[list[any]], start_pos_x: int, start_pos_y: int, current_player: str,
+                                 rows: int, cols: int, score_cols: list[int]) -> list[dict[str, any]]:
     """
-    Generate all valid moves for a specific piece.
-    
-    Args:
-        board: Current board state
-        x, y: Piece position
-        player: Current player
-        rows, cols: Board dimensions
-        score_cols: Scoring column indices
-    
-    Returns:
-        List of valid move dictionaries
+    Computes all valid moves for a single piece, including moves, pushes, flips, and rotates.
+    Returns a list of action dictionaries.
     """
-    moves = []
-    piece = board[y][x]
+    my_piece = board[start_pos_y][start_pos_x]
+    all_possible_actions = []
+
+    # Basic check to make sure there's a piece and it's ours
+    if my_piece is None or my_piece.owner != current_player:
+        return all_possible_actions
+
+    # --- Part 1: Calculate Moves and Pushes ---
     
-    if piece is None or piece.owner != player:
-        return moves
-    
-    directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-    
-    if piece.side == "stone":
-        # Stone movement
-        for dx, dy in directions:
-            nx, ny = x + dx, y + dy
-            if not in_bounds(nx, ny, rows, cols):
-                continue
-            
-            if is_opponent_score_cell(nx, ny, player, rows, cols, score_cols):
-                continue
-            
-            if board[ny][nx] is None:
-                # Simple move
-                moves.append({"action": "move", "from": [x, y], "to": [nx, ny]})
-            elif board[ny][nx].owner != player:
-                # Push move
-                px, py = nx + dx, ny + dy
-                if (in_bounds(px, py, rows, cols) and 
-                    board[py][px] is None and 
-                    not is_opponent_score_cell(px, py, player, rows, cols, score_cols)):
-                    moves.append({"action": "push", "from": [x, y], "to": [nx, ny], "pushed_to": [px, py]})
+    # Directions to check: right, left, down, up
+    move_options = [(1, 0), (-1, 0), (0, 1), (-1, 0)]
+
+    for dx, dy in move_options:
+        target_x, target_y = start_pos_x + dx, start_pos_y + dy
+
+        is_off_board = not in_bounds(target_x, target_y, rows, cols)
+        is_illegal_goal = is_opponent_score_cell(target_x, target_y, current_player, rows, cols, score_cols)
         
-        # Stone to river flips
-        for orientation in ["horizontal", "vertical"]:
-            moves.append({"action": "flip", "from": [x, y], "orientation": orientation})
-    
-    else:  # River piece
-        # River to stone flip
-        moves.append({"action": "flip", "from": [x, y]})
+        if is_off_board or is_illegal_goal:
+            continue
+
+        target_square = board[target_y][target_x]
+
+        if target_square is None:
+            # Simple move to an empty square
+            move_action = {"action": "move", "from": [start_pos_x, start_pos_y], "to": [target_x, target_y]}
+            all_possible_actions.append(move_action)
         
-        # River rotation
-        moves.append({"action": "rotate", "from": [x, y]})
-    
-    return moves
+        elif hasattr(target_square, 'side') and target_square.side == "river":
+            # Move along a river
+            river_landings = _trace_river_flow(board, target_x, target_y, start_pos_x, start_pos_y, current_player, rows, cols, score_cols)
+            for landing_spot in river_landings:
+                lx, ly = landing_spot
+                move_action = {"action": "move", "from": [start_pos_x, start_pos_y], "to": [lx, ly]}
+                all_possible_actions.append(move_action)
+        
+        else: # Target is a stone, so it's a push move
+            if my_piece.side == "stone":
+                # Stone pushing a stone
+                push_dest_x, push_dest_y = target_x + dx, target_y + dy
+                if in_bounds(push_dest_x, push_dest_y, rows, cols) and board[push_dest_y][push_dest_x] is None:
+                    if not is_opponent_score_cell(push_dest_x, push_dest_y, current_player, rows, cols, score_cols):
+                        push_action = {"action": "push", "from": [start_pos_x, start_pos_y], "to": [target_x, target_y], "pushed_to": [push_dest_x, push_dest_y]}
+                        all_possible_actions.append(push_action)
+            
+            else: # River pushing a stone
+                owner_of_pushed_piece = target_square.owner
+                river_landings = _trace_river_flow(board, target_x, target_y, start_pos_x, start_pos_y, owner_of_pushed_piece, rows, cols, score_cols, is_a_push_move=True)
+                for landing_spot in river_landings:
+                    lx, ly = landing_spot
+                    push_action = {"action": "push", "from": [start_pos_x, start_pos_y], "to": [target_x, target_y], "pushed_to": [lx, ly]}
+                    all_possible_actions.append(push_action)
+
+    # --- Part 2: Add Flip and Rotate Actions ---
+
+    # These actions don't depend on what's around the piece, only what the piece is.
+    if my_piece.side == "stone":
+        # A stone can be flipped to a river in two ways
+        flip_h = {"action": "flip", "from": [start_pos_x, start_pos_y], "orientation": "horizontal"}
+        flip_v = {"action": "flip", "from": [start_pos_x, start_pos_y], "orientation": "vertical"}
+        all_possible_actions.append(flip_h)
+        all_possible_actions.append(flip_v)
+    else: # The piece is a river
+        # A river can be flipped to a stone
+        flip_action = {"action": "flip", "from": [start_pos_x, start_pos_y]}
+        all_possible_actions.append(flip_action)
+        
+        # A river can also be rotated
+        rotate_action = {"action": "rotate", "from": [start_pos_x, start_pos_y]}
+        all_possible_actions.append(rotate_action)
+
+    return all_possible_actions
+
+
 
 def generate_all_moves(board: List[List[Any]], player: str, rows: int, cols: int, score_cols: List[int]) -> List[Dict[str, Any]]:
     """
