@@ -166,7 +166,7 @@ def get_valid_moves_for_piece(board: list[list[any]], start_pos_x: int, start_po
     # --- Part 1: Calculate Moves and Pushes ---
     
     # Directions to check: right, left, down, up
-    move_options = [(1, 0), (-1, 0), (0, 1), (-1, 0)]
+    move_options = [(1, 0), (-1, 0), (0, -1), (0, 1)]
 
     for dx, dy in move_options:
         target_x, target_y = start_pos_x + dx, start_pos_y + dy
