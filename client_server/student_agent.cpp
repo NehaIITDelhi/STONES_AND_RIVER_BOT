@@ -1,4 +1,6 @@
 #include <iostream>
+#include <iomanip>
+#include <chrono>
 #include <vector>
 #include <string>
 #include <optional>
@@ -772,6 +774,538 @@ public:
     }
 };
 
+// ==================== ENHANCED SIMULATION & AGENT IMPLEMENTATION ====================
+
+/**
+ * @brief Creates a deep copy of the board state. Necessary for simulation.
+ */
+Board deep_copy_board(const Board& board) {
+    Board new_board(board.size());
+    for (size_t i = 0; i < board.size(); ++i) {
+        new_board[i].resize(board[i].size());
+        for (size_t j = 0; j < board[i].size(); ++j) {
+            if (board[i][j] != nullptr) {
+                new_board[i][j] = make_unique<Piece>(
+                    board[i][j]->owner, 
+                    board[i][j]->side, 
+                    board[i][j]->orientation
+                );
+            } else {
+                new_board[i][j] = nullptr;
+            }
+        }
+    }
+    return new_board;
+}
+
+/**
+ * @brief Comprehensive move validation and application function.
+ * This handles all the complex game rules from the assignment.
+ */
+pair<bool, string> validate_and_apply_move(
+    Board& board, const Move& move, const string& player,
+    int rows, int cols, const vector<int>& score_cols) {
+
+    auto [from_x, from_y] = move.from;
+    
+    // Basic validation - check source piece
+    if (!in_bounds(from_x, from_y, rows, cols)) {
+        return {false, "Source position out of bounds."};
+    }
+    
+    Piece* source_piece = board[from_y][from_x].get();
+    if (!source_piece) {
+        return {false, "No piece at source position."};
+    }
+    
+    if (source_piece->owner != player) {
+        return {false, "Source piece does not belong to current player."};
+    }
+
+    // Handle different move types
+    if (move.action == "move") {
+        if (!move.to.has_value()) {
+            return {false, "Move action requires destination."};
+        }
+        
+        auto [to_x, to_y] = move.to.value();
+        
+        if (!in_bounds(to_x, to_y, rows, cols)) {
+            return {false, "Destination out of bounds."};
+        }
+        
+        if (is_opponent_score_cell(to_x, to_y, player, rows, cols, score_cols)) {
+            return {false, "Cannot move into opponent's scoring area."};
+        }
+        
+        if (board[to_y][to_x] != nullptr) {
+            return {false, "Destination already occupied."};
+        }
+        
+        // Validate move is legal (adjacent or via river)
+        int dx = abs(to_x - from_x);
+        int dy = abs(to_y - from_y);
+        
+        if (dx + dy == 1) {
+            // Simple adjacent move - always valid if destination is empty
+            board[to_y][to_x] = std::move(board[from_y][from_x]);
+            return {true, ""};
+        } else {
+            // Must be a river move - validate path exists
+            vector<pair<int, int>> valid_destinations = _trace_river_flow(
+                board, from_x + (to_x > from_x ? 1 : (to_x < from_x ? -1 : 0)), 
+                from_y + (to_y > from_y ? 1 : (to_y < from_y ? -1 : 0)),
+                from_x, from_y, player, rows, cols, score_cols
+            );
+            
+            if (find(valid_destinations.begin(), valid_destinations.end(), make_pair(to_x, to_y)) == valid_destinations.end()) {
+                return {false, "Invalid river move - destination not reachable."};
+            }
+            
+            board[to_y][to_x] = std::move(board[from_y][from_x]);
+            return {true, ""};
+        }
+    }
+    else if (move.action == "push") {
+        if (!move.to.has_value() || !move.pushed_to.has_value()) {
+            return {false, "Push action requires target and push destination."};
+        }
+        
+        auto [to_x, to_y] = move.to.value();
+        auto [pushed_to_x, pushed_to_y] = move.pushed_to.value();
+        
+        if (!in_bounds(to_x, to_y, rows, cols) || !in_bounds(pushed_to_x, pushed_to_y, rows, cols)) {
+            return {false, "Push positions out of bounds."};
+        }
+        
+        if (board[to_y][to_x] == nullptr) {
+            return {false, "No piece to push at target position."};
+        }
+        
+        if (board[to_y][to_x]->side != "stone") {
+            return {false, "Can only push stone pieces."};
+        }
+        
+        if (board[pushed_to_y][pushed_to_x] != nullptr) {
+            return {false, "Push destination already occupied."};
+        }
+        
+        if (is_opponent_score_cell(pushed_to_x, pushed_to_y, board[to_y][to_x]->owner, rows, cols, score_cols)) {
+            return {false, "Cannot push piece into opponent's scoring area."};
+        }
+        
+        // Validate push direction and distance
+        if (source_piece->side == "stone") {
+            // Stone push: exactly one step in same direction
+            int dx = to_x - from_x;
+            int dy = to_y - from_y;
+            
+            if (abs(dx) + abs(dy) != 1) {
+                return {false, "Stone can only push adjacent pieces."};
+            }
+            
+            if (pushed_to_x != to_x + dx || pushed_to_y != to_y + dy) {
+                return {false, "Stone push must be in same direction."};
+            }
+            
+            // Execute stone push
+            board[pushed_to_y][pushed_to_x] = std::move(board[to_y][to_x]);
+            board[to_y][to_x] = std::move(board[from_y][from_x]);
+            return {true, ""};
+        } else {
+            // River push: can push multiple spaces along river direction
+            int dx = to_x - from_x;
+            int dy = to_y - from_y;
+            
+            if (abs(dx) + abs(dy) != 1) {
+                return {false, "River can only push adjacent pieces."};
+            }
+            
+            // Validate pushed destination is reachable via river flow
+            vector<pair<int, int>> valid_destinations = _trace_river_flow(
+                board, to_x, to_y, from_x, from_y, 
+                board[to_y][to_x]->owner, rows, cols, score_cols, true
+            );
+            
+            if (find(valid_destinations.begin(), valid_destinations.end(), 
+                    make_pair(pushed_to_x, pushed_to_y)) == valid_destinations.end()) {
+                return {false, "Invalid river push destination."};
+            }
+            
+            // Execute river push and flip river to stone
+            board[pushed_to_y][pushed_to_x] = std::move(board[to_y][to_x]);
+            board[to_y][to_x] = std::move(board[from_y][from_x]);
+            board[to_y][to_x]->side = "stone";
+            board[to_y][to_x]->orientation = "";
+            return {true, ""};
+        }
+    }
+    else if (move.action == "flip") {
+        if (source_piece->side == "stone") {
+            // Flipping stone to river
+            if (!move.orientation.has_value()) {
+                return {false, "Flipping stone to river requires orientation."};
+            }
+            
+            string orient = move.orientation.value();
+            if (orient != "horizontal" && orient != "vertical") {
+                return {false, "Invalid river orientation."};
+            }
+            
+            source_piece->side = "river";
+            source_piece->orientation = orient;
+            return {true, ""};
+        } else {
+            // Flipping river to stone
+            source_piece->side = "stone";
+            source_piece->orientation = "";
+            return {true, ""};
+        }
+    }
+    else if (move.action == "rotate") {
+        if (source_piece->side != "river") {
+            return {false, "Can only rotate river pieces."};
+        }
+        
+        // Rotate river 90 degrees
+        source_piece->orientation = (source_piece->orientation == "horizontal") ? "vertical" : "horizontal";
+        return {true, ""};
+    }
+    else {
+        return {false, "Unknown action type."};
+    }
+}
+
+/**
+ * @brief Simulate a move on a copy of the board.
+ */
+pair<bool, Board> simulate_move(const Board& board, const Move& move, const string& player, 
+                               int rows, int cols, const vector<int>& score_cols) {
+    Board board_copy = deep_copy_board(board);
+    auto [success, message] = validate_and_apply_move(board_copy, move, player, rows, cols, score_cols);
+    
+    if (success) {
+        return {true, std::move(board_copy)};
+    } else {
+        // Return original board on failure
+        return {false, deep_copy_board(board)};
+    }
+}
+
+/**
+ * @brief Check if the game is in a terminal state (someone won).
+ */
+pair<bool, string> check_game_over(const Board& board, int rows, int cols, const vector<int>& score_cols) {
+    int circle_stones = count_stones_in_scoring_area(board, "circle", rows, cols, score_cols);
+    int square_stones = count_stones_in_scoring_area(board, "square", rows, cols, score_cols);
+    
+    if (circle_stones >= 4) {
+        return {true, "circle"};
+    }
+    if (square_stones >= 4) {
+        return {true, "square"};
+    }
+    
+    return {false, ""};
+}
+
+/**
+ * @brief Abstract base class for all agents.
+ */
+class BaseAgent {
+public:
+    string player;
+    string opponent;
+
+    BaseAgent(string p) : player(move(p)), opponent(get_opponent(player)) {}
+    virtual ~BaseAgent() = default;
+
+    virtual optional<Move> choose(const Board& board, int rows, int cols, const vector<int>& score_cols, 
+                                 double current_player_time, double opponent_time) = 0;
+};
+
+/**
+ * @brief Random Agent for testing purposes.
+ */
+class RandomAgent : public BaseAgent {
+private:
+    mutable random_device rd;
+    mutable mt19937 gen;
+    
+public:
+    RandomAgent(string p) : BaseAgent(move(p)), gen(rd()) {}
+
+    optional<Move> choose(const Board& board, int rows, int cols, const vector<int>& score_cols, 
+                         double current_player_time, double opponent_time) override {
+        auto moves = generate_all_moves(board, this->player, rows, cols, score_cols);
+        
+        if (moves.empty()) {
+            return nullopt;
+        }
+        
+        uniform_int_distribution<> distrib(0, moves.size() - 1);
+        return moves[distrib(gen)];
+    }
+};
+
+/**
+ * @brief Enhanced Student Agent Implementation with sophisticated AI.
+ */
+class StudentAgent : public BaseAgent {
+private:
+    static const int MAX_DEPTH = 4;
+    mutable random_device rd;
+    mutable mt19937 gen;
+    
+    /**
+     * @brief Move ordering heuristic - prioritize promising moves first for better alpha-beta pruning.
+     */
+    vector<Move> order_moves(const vector<Move>& moves, const Board& board, 
+                            int rows, int cols, const vector<int>& score_cols) {
+        vector<pair<double, Move>> scored_moves;
+        
+        for (const auto& move : moves) {
+            double score = 0.0;
+            
+            // Prioritize moves that directly score
+            if (move.action == "move" && move.to.has_value()) {
+                auto [to_x, to_y] = move.to.value();
+                if (is_own_score_cell(to_x, to_y, this->player, rows, cols, score_cols)) {
+                    score += 1000.0;
+                }
+            }
+            
+            // Prioritize moves that get pieces closer to scoring
+            if (move.action == "move" && move.to.has_value()) {
+                auto [to_x, to_y] = move.to.value();
+                int target_row = (this->player == "circle") ? top_score_row() : bottom_score_row(rows);
+                score += 100.0 / (1.0 + abs(to_y - target_row));
+            }
+            
+            // Slightly prioritize captures and pushes
+            if (move.action == "push") {
+                score += 10.0;
+            }
+            
+            scored_moves.emplace_back(score, move);
+        }
+        
+        // Sort by score (descending)
+        sort(scored_moves.begin(), scored_moves.end(), 
+             [](const auto& a, const auto& b) { return a.first > b.first; });
+        
+        vector<Move> ordered_moves;
+        for (const auto& [score, move] : scored_moves) {
+            ordered_moves.push_back(move);
+        }
+        
+        return ordered_moves;
+    }
+    
+    /**
+     * @brief Minimax with alpha-beta pruning and move ordering.
+     */
+    pair<double, optional<Move>> minimax(const Board& board, int depth, double alpha, double beta, 
+                                       bool maximizing_player, const string& current_player,
+                                       int rows, int cols, const vector<int>& score_cols,
+                                       double time_remaining) {
+        
+        // Check time limit
+        if (time_remaining < 0.1) {
+            double eval = quick_evaluate_board(board, this->player, rows, cols, score_cols);
+            return {eval, nullopt};
+        }
+        
+        // Check for terminal states
+        auto [game_over, winner] = check_game_over(board, rows, cols, score_cols);
+        if (game_over) {
+            if (winner == this->player) {
+                return {10000.0 + depth, nullopt}; // Win bonus for faster wins
+            } else {
+                return {-10000.0 - depth, nullopt}; // Loss penalty for slower losses
+            }
+        }
+        
+        // Base case
+        if (depth == 0) {
+            double eval = advanced_evaluate_board(board, this->player, rows, cols, score_cols);
+            return {eval, nullopt};
+        }
+        
+        auto moves = generate_all_moves(board, current_player, rows, cols, score_cols);
+        if (moves.empty()) {
+            double eval = advanced_evaluate_board(board, this->player, rows, cols, score_cols);
+            return {eval, nullopt};
+        }
+        
+        // Move ordering for better pruning
+        moves = order_moves(moves, board, rows, cols, score_cols);
+        
+        optional<Move> best_move = nullopt;
+        
+        if (maximizing_player) {
+            double max_eval = -numeric_limits<double>::infinity();
+            
+            for (const auto& move : moves) {
+                auto [success, new_board] = simulate_move(board, move, current_player, rows, cols, score_cols);
+                if (!success) continue;
+                
+                string next_player = get_opponent(current_player);
+                double time_per_move = time_remaining / moves.size();
+                
+                auto [eval, _] = minimax(new_board, depth - 1, alpha, beta, false, next_player, 
+                                       rows, cols, score_cols, time_remaining - time_per_move);
+                
+                if (eval > max_eval) {
+                    max_eval = eval;
+                    best_move = move;
+                }
+                
+                alpha = max(alpha, eval);
+                if (beta <= alpha) {
+                    break; // Alpha-beta pruning
+                }
+            }
+            
+            return {max_eval, best_move};
+        } else {
+            double min_eval = numeric_limits<double>::infinity();
+            
+            for (const auto& move : moves) {
+                auto [success, new_board] = simulate_move(board, move, current_player, rows, cols, score_cols);
+                if (!success) continue;
+                
+                string next_player = get_opponent(current_player);
+                double time_per_move = time_remaining / moves.size();
+                
+                auto [eval, _] = minimax(new_board, depth - 1, alpha, beta, true, next_player, 
+                                       rows, cols, score_cols, time_remaining - time_per_move);
+                
+                if (eval < min_eval) {
+                    min_eval = eval;
+                    best_move = move;
+                }
+                
+                beta = min(beta, eval);
+                if (beta <= alpha) {
+                    break; // Alpha-beta pruning
+                }
+            }
+            
+            return {min_eval, best_move};
+        }
+    }
+    
+public:
+    StudentAgent(string p) : BaseAgent(move(p)), gen(rd()) {}
+
+    /**
+     * @brief Choose the best move using minimax with alpha-beta pruning and advanced evaluation.
+     */
+    optional<Move> choose(const Board& board, int rows, int cols, const vector<int>& score_cols, 
+                         double current_player_time, double opponent_time) override {
+        
+        auto moves = generate_all_moves(board, this->player, rows, cols, score_cols);
+        if (moves.empty()) {
+            return nullopt;
+        }
+        
+        // Immediate win detection
+        for (const auto& move : moves) {
+            auto [success, new_board] = simulate_move(board, move, this->player, rows, cols, score_cols);
+            if (success) {
+                int stones_after = count_stones_in_scoring_area(new_board, this->player, rows, cols, score_cols);
+                if (stones_after >= 4) {
+                    return move; // Take winning move immediately
+                }
+            }
+        }
+        
+        // Opponent threat analysis
+        auto opponent_moves = generate_all_moves(board, this->opponent, rows, cols, score_cols);
+        bool opponent_can_win = false;
+        
+        for (const auto& opp_move : opponent_moves) {
+            auto [success, opp_board] = simulate_move(board, opp_move, this->opponent, rows, cols, score_cols);
+            if (success) {
+                int opp_stones = count_stones_in_scoring_area(opp_board, this->opponent, rows, cols, score_cols);
+                if (opp_stones >= 4) {
+                    opponent_can_win = true;
+                    break;
+                }
+            }
+        }
+        
+        // If opponent can win, try defensive moves first
+        if (opponent_can_win) {
+            vector<Move> defensive_moves;
+            for (const auto& our_move : moves) {
+                auto [our_success, our_board] = simulate_move(board, our_move, this->player, rows, cols, score_cols);
+                if (our_success) {
+                    bool blocks_win = true;
+                    for (const auto& opp_move : opponent_moves) {
+                        auto [opp_success, final_board] = simulate_move(our_board, opp_move, this->opponent, rows, cols, score_cols);
+                        if (opp_success) {
+                            int opp_stones = count_stones_in_scoring_area(final_board, this->opponent, rows, cols, score_cols);
+                            if (opp_stones >= 4) {
+                                blocks_win = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (blocks_win) {
+                        defensive_moves.push_back(our_move);
+                    }
+                }
+            }
+            
+            if (!defensive_moves.empty()) {
+                moves = defensive_moves;
+            }
+        }
+        
+        // Determine search depth based on available time
+        int search_depth = MAX_DEPTH;
+        if (current_player_time < 15.0) {
+            search_depth = 3;
+        }
+        if (current_player_time < 10.0) {
+            search_depth = 2;
+        }
+        if (current_player_time < 5.0) {
+            search_depth = 1;
+        }
+        
+        // Minimax search
+        double alpha = -numeric_limits<double>::infinity();
+        double beta = numeric_limits<double>::infinity();
+        double time_for_search = min(current_player_time * 0.1, 2.0); // Use at most 10% of remaining time
+        
+        auto [best_score, best_move] = minimax(board, search_depth, alpha, beta, true, this->player, 
+                                             rows, cols, score_cols, time_for_search);
+        
+        if (best_move.has_value()) {
+            return best_move;
+        }
+        
+        // Fallback: evaluate each move and pick the best
+        Move best_immediate = moves[0];
+        double best_eval = -numeric_limits<double>::infinity();
+        
+        for (const auto& move : moves) {
+            auto [success, new_board] = simulate_move(board, move, this->player, rows, cols, score_cols);
+            if (success) {
+                double eval = advanced_evaluate_board(new_board, this->player, rows, cols, score_cols);
+                if (eval > best_eval) {
+                    best_eval = eval;
+                    best_immediate = move;
+                }
+            }
+        }
+        
+        return best_immediate;
+    }
+};
 
 // ==================== TESTING HELPERS ====================
 // Dummy implementation of gameEngine parts for testing
@@ -831,6 +1365,565 @@ void test_student_agent() {
         print_move(move_opt.value());
     } else {
         cout << "✗ Agent returned no move" << endl;
+    }
+}
+
+// ==================== COMPREHENSIVE TESTING HELPERS ====================
+
+namespace Testing {
+
+/**
+ * @brief Print a visual representation of the board state
+ */
+void print_board(const Board& board, int rows, int cols, const vector<int>& score_cols) {
+    cout << "\n=== BOARD STATE ===" << endl;
+    cout << "   ";
+    for (int x = 0; x < cols; ++x) {
+        cout << setw(3) << x;
+    }
+    cout << endl;
+    
+    for (int y = 0; y < rows; ++y) {
+        cout << setw(2) << y << " ";
+        for (int x = 0; x < cols; ++x) {
+            const Piece* piece = board[y][x].get();
+            
+            // Check if this is a scoring area
+            bool is_circle_score = (y == top_score_row() && 
+                                   find(score_cols.begin(), score_cols.end(), x) != score_cols.end());
+            bool is_square_score = (y == bottom_score_row(rows) && 
+                                   find(score_cols.begin(), score_cols.end(), x) != score_cols.end());
+            
+            if (piece == nullptr) {
+                if (is_circle_score) cout << " ◯ "; // Circle scoring area
+                else if (is_square_score) cout << " □ "; // Square scoring area
+                else cout << " . ";
+            } else {
+                char owner_char = (piece->owner == "circle") ? 'C' : 'S';
+                if (piece->side == "stone") {
+                    cout << " " << owner_char << " ";
+                } else { // river
+                    char river_char = (piece->orientation == "horizontal") ? '-' : '|';
+                    cout << owner_char << river_char << " ";
+                }
+            }
+        }
+        cout << endl;
+    }
+    
+    cout << "\nLegend:" << endl;
+    cout << "C/S = Circle/Square stone, C-/C|/S-/S| = Rivers, ◯/□ = Scoring areas, . = Empty" << endl;
+}
+
+/**
+ * @brief Print detailed move information
+ */
+void print_move_details(const Move& move) {
+    cout << "Move Details:" << endl;
+    cout << "  Action: " << move.action << endl;
+    cout << "  From: (" << move.from.first << ", " << move.from.second << ")" << endl;
+    
+    if (move.to.has_value()) {
+        cout << "  To: (" << move.to->first << ", " << move.to->second << ")" << endl;
+    }
+    
+    if (move.pushed_to.has_value()) {
+        cout << "  Pushed To: (" << move.pushed_to->first << ", " << move.pushed_to->second << ")" << endl;
+    }
+    
+    if (move.orientation.has_value()) {
+        cout << "  Orientation: " << move.orientation.value() << endl;
+    }
+}
+
+/**
+ * @brief Create a test board with specific configuration
+ */
+Board create_test_board(int rows, int cols, const vector<tuple<int, int, string, string, string>>& pieces) {
+    Board board(rows, vector<unique_ptr<Piece>>(cols));
+    
+    for (const auto& [x, y, owner, side, orientation] : pieces) {
+        if (in_bounds(x, y, rows, cols)) {
+            board[y][x] = make_unique<Piece>(owner, side, orientation);
+        }
+    }
+    
+    return board;
+}
+
+/**
+ * @brief Test basic move generation
+ */
+void test_basic_move_generation() {
+    cout << "\n=== TESTING BASIC MOVE GENERATION ===" << endl;
+    
+    int rows = 8, cols = 6;
+    auto score_cols = score_cols_for(cols);
+    
+    // Create test board with a few pieces
+    vector<tuple<int, int, string, string, string>> test_pieces = {
+        {2, 3, "circle", "stone", ""},
+        {3, 3, "square", "river", "horizontal"},
+        {4, 3, "circle", "river", "vertical"}
+    };
+    
+    Board board = create_test_board(rows, cols, test_pieces);
+    print_board(board, rows, cols, score_cols);
+    
+    // Test move generation for circle player
+    auto moves = generate_all_moves(board, "circle", rows, cols, score_cols);
+    cout << "\nGenerated " << moves.size() << " moves for circle:" << endl;
+    
+    for (size_t i = 0; i < min((size_t)5, moves.size()); ++i) {
+        cout << "Move " << (i + 1) << ": ";
+        print_move(moves[i]);
+    }
+    
+    if (moves.size() > 5) {
+        cout << "... and " << (moves.size() - 5) << " more moves" << endl;
+    }
+}
+
+/**
+ * @brief Test river movement mechanics
+ */
+void test_river_movement() {
+    cout << "\n=== TESTING RIVER MOVEMENT ===" << endl;
+    
+    int rows = 8, cols = 6;
+    auto score_cols = score_cols_for(cols);
+    
+    // Create board with river chain
+    vector<tuple<int, int, string, string, string>> test_pieces = {
+        {1, 4, "circle", "stone", ""},        // Stone to move
+        {2, 4, "circle", "river", "horizontal"}, // River 1 (horizontal)
+        {3, 4, "circle", "river", "horizontal"}, // River 2 (horizontal)
+        {4, 4, "circle", "river", "vertical"},   // River 3 (vertical - change direction)
+        {1, 3, "square", "stone", ""}          // Blocking stone
+    };
+    
+    Board board = create_test_board(rows, cols, test_pieces);
+    print_board(board, rows, cols, score_cols);
+    
+    // Test river flow from stone position
+    auto possible_moves = get_valid_moves_for_piece(board, 1, 4, "circle", rows, cols, score_cols);
+    
+    cout << "\nPossible moves for stone at (1, 4):" << endl;
+    for (const auto& move : possible_moves) {
+        if (move.action == "move") {
+            print_move(move);
+        }
+    }
+}
+
+/**
+ * @brief Test push mechanics
+ */
+void test_push_mechanics() {
+    cout << "\n=== TESTING PUSH MECHANICS ===" << endl;
+    
+    int rows = 8, cols = 6;
+    auto score_cols = score_cols_for(cols);
+    
+    // Test stone pushing stone
+    cout << "\n--- Stone Pushing Stone ---" << endl;
+    vector<tuple<int, int, string, string, string>> push_test1 = {
+        {2, 4, "circle", "stone", ""},    // Pusher
+        {3, 4, "square", "stone", ""}     // Target to push
+        // Position (4, 4) should be empty for valid push
+    };
+    
+    Board board1 = create_test_board(rows, cols, push_test1);
+    print_board(board1, rows, cols, score_cols);
+    
+    auto push_moves1 = get_valid_moves_for_piece(board1, 2, 4, "circle", rows, cols, score_cols);
+    cout << "Push moves available:" << endl;
+    for (const auto& move : push_moves1) {
+        if (move.action == "push") {
+            print_move(move);
+        }
+    }
+    
+    // Test river pushing stone
+    cout << "\n--- River Pushing Stone ---" << endl;
+    vector<tuple<int, int, string, string, string>> push_test2 = {
+        {2, 4, "circle", "river", "horizontal"}, // River pusher
+        {3, 4, "square", "stone", ""},           // Target to push
+        {4, 4, "circle", "river", "horizontal"}  // Continuation river
+    };
+    
+    Board board2 = create_test_board(rows, cols, push_test2);
+    print_board(board2, rows, cols, score_cols);
+    
+    auto push_moves2 = get_valid_moves_for_piece(board2, 2, 4, "circle", rows, cols, score_cols);
+    cout << "River push moves available:" << endl;
+    for (const auto& move : push_moves2) {
+        if (move.action == "push") {
+            print_move(move);
+        }
+    }
+}
+
+/**
+ * @brief Test flip and rotate mechanics
+ */
+void test_flip_rotate() {
+    cout << "\n=== TESTING FLIP AND ROTATE ===" << endl;
+    
+    int rows = 8, cols = 6;
+    auto score_cols = score_cols_for(cols);
+    
+    vector<tuple<int, int, string, string, string>> test_pieces = {
+        {2, 3, "circle", "stone", ""},
+        {3, 3, "circle", "river", "horizontal"}
+    };
+    
+    Board board = create_test_board(rows, cols, test_pieces);
+    print_board(board, rows, cols, score_cols);
+    
+    // Test flipping stone
+    cout << "\nFlip/Rotate options for stone at (2, 3):" << endl;
+    auto stone_moves = get_valid_moves_for_piece(board, 2, 3, "circle", rows, cols, score_cols);
+    for (const auto& move : stone_moves) {
+        if (move.action == "flip") {
+            print_move(move);
+        }
+    }
+    
+    // Test flipping/rotating river
+    cout << "\nFlip/Rotate options for river at (3, 3):" << endl;
+    auto river_moves = get_valid_moves_for_piece(board, 3, 3, "circle", rows, cols, score_cols);
+    for (const auto& move : river_moves) {
+        if (move.action == "flip" || move.action == "rotate") {
+            print_move(move);
+        }
+    }
+}
+
+/**
+ * @brief Test move validation and application
+ */
+void test_move_validation() {
+    cout << "\n=== TESTING MOVE VALIDATION ===" << endl;
+    
+    int rows = 8, cols = 6;
+    auto score_cols = score_cols_for(cols);
+    
+    vector<tuple<int, int, string, string, string>> test_pieces = {
+        {2, 4, "circle", "stone", ""},
+        {3, 4, "square", "stone", ""}
+    };
+    
+    Board board = create_test_board(rows, cols, test_pieces);
+    print_board(board, rows, cols, score_cols);
+    
+    // Test valid move
+    Move valid_move = {"move", {2, 4}, {{1, 4}}, nullopt, nullopt};
+    cout << "\nTesting valid move:" << endl;
+    print_move(valid_move);
+    
+    auto [success1, new_board1] = simulate_move(board, valid_move, "circle", rows, cols, score_cols);
+    cout << "Result: " << (success1 ? "SUCCESS" : "FAILED") << endl;
+    
+    if (success1) {
+        cout << "Board after move:" << endl;
+        print_board(new_board1, rows, cols, score_cols);
+    }
+    
+    // Test invalid move
+    Move invalid_move = {"move", {2, 4}, {{3, 4}}, nullopt, nullopt}; // Occupied destination
+    cout << "\nTesting invalid move (occupied destination):" << endl;
+    print_move(invalid_move);
+    
+    auto [success2, new_board2] = simulate_move(board, invalid_move, "circle", rows, cols, score_cols);
+    cout << "Result: " << (success2 ? "SUCCESS" : "FAILED") << endl;
+}
+
+/**
+ * @brief Test evaluation functions
+ */
+void test_evaluation_functions() {
+    cout << "\n=== TESTING EVALUATION FUNCTIONS ===" << endl;
+    
+    int rows = 12, cols = 8;
+    auto score_cols = score_cols_for(cols);
+    
+    // Create advantageous position for circle
+    vector<tuple<int, int, string, string, string>> test_pieces = {
+        // Circle stones in scoring area
+        {3, 2, "circle", "stone", ""},
+        {4, 2, "circle", "stone", ""},
+        // Circle stones near scoring area
+        {5, 3, "circle", "stone", ""},
+        {2, 3, "circle", "stone", ""},
+        // Square pieces
+        {3, 9, "square", "stone", ""},
+        {6, 7, "square", "stone", ""}
+    };
+    
+    Board board = create_test_board(rows, cols, test_pieces);
+    print_board(board, rows, cols, score_cols);
+    
+    // Evaluate for both players
+    double circle_eval = advanced_evaluate_board(board, "circle", rows, cols, score_cols);
+    double square_eval = advanced_evaluate_board(board, "square", rows, cols, score_cols);
+    
+    cout << "\nEvaluation Scores:" << endl;
+    cout << "Circle: " << circle_eval << endl;
+    cout << "Square: " << square_eval << endl;
+    
+    // Test individual components
+    int circle_scoring = count_stones_in_scoring_area(board, "circle", rows, cols, score_cols);
+    int square_scoring = count_stones_in_scoring_area(board, "square", rows, cols, score_cols);
+    int circle_ready = count_stones_one_move_from_scoring(board, "circle", rows, cols, score_cols);
+    int square_ready = count_stones_one_move_from_scoring(board, "square", rows, cols, score_cols);
+    
+    cout << "\nScoring breakdown:" << endl;
+    cout << "Circle stones in scoring area: " << circle_scoring << endl;
+    cout << "Square stones in scoring area: " << square_scoring << endl;
+    cout << "Circle stones one move from scoring: " << circle_ready << endl;
+    cout << "Square stones one move from scoring: " << square_ready << endl;
+}
+
+/**
+ * @brief Test agent decision making
+ */
+void test_agent_decisions() {
+    cout << "\n=== TESTING AGENT DECISIONS ===" << endl;
+    
+    int rows = 12, cols = 8;
+    auto score_cols = score_cols_for(cols);
+    
+    // Create near-win scenario for testing
+    vector<tuple<int, int, string, string, string>> test_pieces = {
+        // Circle close to winning (3 stones in scoring area)
+        {3, 2, "circle", "stone", ""},
+        {4, 2, "circle", "stone", ""},
+        {5, 2, "circle", "stone", ""},
+        // Circle stone that can win
+        {4, 3, "circle", "stone", ""},
+        // Square has some stones
+        {3, 9, "square", "stone", ""},
+        {4, 9, "square", "stone", ""}
+    };
+    
+    Board board = create_test_board(rows, cols, test_pieces);
+    print_board(board, rows, cols, score_cols);
+    
+    cout << "\nCircle is one move away from winning!" << endl;
+    
+    StudentAgent circle_agent("circle");
+    auto chosen_move = circle_agent.choose(board, rows, cols, score_cols, 30.0, 30.0);
+    
+    if (chosen_move.has_value()) {
+        cout << "\nAgent chose move:" << endl;
+        print_move_details(chosen_move.value());
+        
+        // Simulate the move
+        auto [success, new_board] = simulate_move(board, chosen_move.value(), "circle", rows, cols, score_cols);
+        if (success) {
+            cout << "\nBoard after agent's move:" << endl;
+            print_board(new_board, rows, cols, score_cols);
+            
+            int stones_after = count_stones_in_scoring_area(new_board, "circle", rows, cols, score_cols);
+            cout << "\nCircle stones in scoring area after move: " << stones_after << endl;
+            if (stones_after >= 4) {
+                cout << "🎉 CIRCLE WINS! 🎉" << endl;
+            }
+        }
+    } else {
+        cout << "Agent returned no move!" << endl;
+    }
+}
+
+/**
+ * @brief Performance test - measure move generation speed
+ */
+void test_performance() {
+    cout << "\n=== PERFORMANCE TESTING ===" << endl;
+    
+    int rows = 12, cols = 8;
+    auto score_cols = score_cols_for(cols);
+    Board board = gameEngine::default_start_board(rows, cols);
+    
+    auto start_time = chrono::high_resolution_clock::now();
+    
+    // Generate moves multiple times
+    const int iterations = 1000;
+    int total_moves = 0;
+    
+    for (int i = 0; i < iterations; ++i) {
+        auto moves = generate_all_moves(board, "circle", rows, cols, score_cols);
+        total_moves += moves.size();
+    }
+    
+    auto end_time = chrono::high_resolution_clock::now();
+    auto duration = chrono::duration_cast<chrono::microseconds>(end_time - start_time);
+    
+    cout << "Performance Results:" << endl;
+    cout << "Iterations: " << iterations << endl;
+    cout << "Total moves generated: " << total_moves << endl;
+    cout << "Average moves per iteration: " << (double)total_moves / iterations << endl;
+    cout << "Total time: " << duration.count() << " microseconds" << endl;
+    cout << "Time per iteration: " << duration.count() / iterations << " microseconds" << endl;
+}
+
+/**
+ * @brief Test game simulation from start to finish
+ */
+void test_full_game_simulation() {
+    cout << "\n=== FULL GAME SIMULATION ===" << endl;
+    
+    int rows = gameEngine::DEFAULT_ROWS;
+    int cols = gameEngine::DEFAULT_COLS;
+    auto score_cols = score_cols_for(cols);
+    Board board = gameEngine::default_start_board(rows, cols);
+    
+    StudentAgent circle_agent("circle");
+    RandomAgent square_agent("square");
+    
+    string current_player = "circle";
+    int move_count = 0;
+    const int max_moves = 50; // Limit for testing
+    
+    cout << "Starting game simulation..." << endl;
+    print_board(board, rows, cols, score_cols);
+    
+    while (move_count < max_moves) {
+        // Check for game over
+        auto [game_over, winner] = check_game_over(board, rows, cols, score_cols);
+        if (game_over) {
+            cout << "\n🎉 GAME OVER! Winner: " << winner << " 🎉" << endl;
+            break;
+        }
+        
+        // Get move from current player
+        optional<Move> chosen_move;
+        if (current_player == "circle") {
+            chosen_move = circle_agent.choose(board, rows, cols, score_cols, 30.0, 30.0);
+        } else {
+            chosen_move = square_agent.choose(board, rows, cols, score_cols, 30.0, 30.0);
+        }
+        
+        if (!chosen_move.has_value()) {
+            cout << "\nNo moves available for " << current_player << "!" << endl;
+            break;
+        }
+        
+        // Apply move
+        auto [success, new_board] = simulate_move(board, chosen_move.value(), current_player, rows, cols, score_cols);
+        if (!success) {
+            cout << "\nInvalid move attempted by " << current_player << "!" << endl;
+            break;
+        }
+        
+        board = std::move(new_board);
+        move_count++;
+        
+        cout << "\nMove " << move_count << " by " << current_player << ":" << endl;
+        print_move(chosen_move.value());
+        
+        // Show board every few moves
+        if (move_count % 10 == 0 || move_count <= 5) {
+            print_board(board, rows, cols, score_cols);
+        }
+        
+        // Switch players
+        current_player = get_opponent(current_player);
+    }
+    
+    cout << "\nSimulation completed after " << move_count << " moves." << endl;
+    
+    // Final scores
+    int circle_stones = count_stones_in_scoring_area(board, "circle", rows, cols, score_cols);
+    int square_stones = count_stones_in_scoring_area(board, "square", rows, cols, score_cols);
+    cout << "Final scores - Circle: " << circle_stones << ", Square: " << square_stones << endl;
+}
+
+/**
+ * @brief Run all tests
+ */
+void run_all_tests() {
+    cout << "🧪 RUNNING COMPREHENSIVE TESTS FOR RIVERS AND STONES 🧪" << endl;
+    cout << "======================================================" << endl;
+    
+    try {
+        test_basic_move_generation();
+        test_river_movement();
+        test_push_mechanics();
+        test_flip_rotate();
+        test_move_validation();
+        test_evaluation_functions();
+        test_agent_decisions();
+        test_performance();
+        test_full_game_simulation();
+        
+        cout << "\n✅ ALL TESTS COMPLETED SUCCESSFULLY!" << endl;
+        
+    } catch (const exception& e) {
+        cout << "\n❌ TEST FAILED WITH EXCEPTION: " << e.what() << endl;
+    }
+}
+
+} // namespace Testing
+
+// Helper function to print a move for verification (updated version)
+void print_move(const Move& move) {
+    cout << "Action: " << move.action
+         << ", From: (" << move.from.first << ", " << move.from.second << ")";
+    if (move.to) {
+        cout << ", To: (" << move.to->first << ", " << move.to->second << ")";
+    }
+    if (move.pushed_to) {
+        cout << ", Pushed To: (" << move.pushed_to->first << ", " << move.pushed_to->second << ")";
+    }
+    if (move.orientation) {
+        cout << ", Orientation: " << move.orientation.value();
+    }
+    cout << endl;
+}
+
+/**
+ * @brief Updated test function that runs comprehensive tests
+ */
+void test_student_agent() {
+    cout << "Testing StudentAgent and game mechanics..." << endl;
+    Testing::run_all_tests();
+}
+
+/**
+ * @brief Interactive testing mode
+ */
+void interactive_test_mode() {
+    cout << "\n=== INTERACTIVE TEST MODE ===" << endl;
+    cout << "Available tests:" << endl;
+    cout << "1. Basic move generation" << endl;
+    cout << "2. River movement" << endl;
+    cout << "3. Push mechanics" << endl;
+    cout << "4. Flip and rotate" << endl;
+    cout << "5. Move validation" << endl;
+    cout << "6. Evaluation functions" << endl;
+    cout << "7. Agent decisions" << endl;
+    cout << "8. Performance test" << endl;
+    cout << "9. Full game simulation" << endl;
+    cout << "0. Run all tests" << endl;
+    
+    int choice;
+    cout << "\nEnter test number: ";
+    cin >> choice;
+    
+    switch (choice) {
+        case 1: Testing::test_basic_move_generation(); break;
+        case 2: Testing::test_river_movement(); break;
+        case 3: Testing::test_push_mechanics(); break;
+        case 4: Testing::test_flip_rotate(); break;
+        case 5: Testing::test_move_validation(); break;
+        case 6: Testing::test_evaluation_functions(); break;
+        case 7: Testing::test_agent_decisions(); break;
+        case 8: Testing::test_performance(); break;
+        case 9: Testing::test_full_game_simulation(); break;
+        case 0: Testing::run_all_tests(); break;
+        default: cout << "Invalid choice!" << endl;
     }
 }
 
