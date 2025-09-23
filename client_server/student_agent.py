@@ -3,6 +3,9 @@ import random
 import copy
 from typing import List, Dict, Any, Optional, Tuple
 
+# ===================================================================
+# UTILITY FUNCTIONS 
+# ===================================================================
 def get_opponent(player: str) -> str:
     return "square" if player == "circle" else "circle"
 
@@ -32,7 +35,9 @@ def is_own_score_cell(x: int, y: int, player: str, rows: int, cols: int, score_c
     else:
         return (y == bottom_score_row(rows)) and (x in score_cols)
 
-
+# ===================================================================
+# AGENT BASE CLASS
+# ===================================================================
 class BaseAgent:
     def __init__(self, player: str):
         self.player = player
@@ -42,13 +47,17 @@ class BaseAgent:
                current_player_time: float, opponent_time: float) -> Optional[Dict[str, Any]]:
         raise NotImplementedError
 
-
+# ===================================================================
+# STUDENT AGENT IMPLEMENTATION
+# ===================================================================
 class StudentAgent(BaseAgent):
     def __init__(self, player: str):
         super().__init__(player)
         self.transposition_table = {}
-        self.killer_moves = {}  # Store killer moves for move ordering
-        self.history_table = {}  # History heuristic for move ordering
+        self.killer_moves = {}
+        self.history_table = {}
+        self.river_chains_cache = {}
+        self.turn_count = 0
 
     # ==============================================================
     # MAIN SEARCH FUNCTION
@@ -57,6 +66,8 @@ class StudentAgent(BaseAgent):
     def choose(self, game_state: Dict[str, Any], rows: int, cols: int, score_cols: List[int],
                current_player_time: float, opponent_time: float) -> Optional[Dict[str, Any]]:
         
+        self.turn_count += 1
+        
         if isinstance(game_state, dict) and "board" in game_state:
             board = game_state["board"]
         else:
@@ -64,91 +75,111 @@ class StudentAgent(BaseAgent):
 
         start_time = time.time()
         
-        # Aggressive time management - use less time per move
-        time_limit = min(current_player_time / 30.0, 1.0)  # More aggressive time division
-        
-        # Get valid moves
-        moves = self.get_all_valid_moves(board, self.player, rows, cols, score_cols)
+        # Adaptive time management
+        if current_player_time > 35:
+            time_limit = 1.8
+        elif current_player_time > 20:
+            time_limit = 1.2
+        elif current_player_time > 10:
+            time_limit = 0.8
+        else:
+            time_limit = max(0.2, current_player_time / 15.0)
+
+        moves = self.get_all_valid_moves_enhanced(board, self.player, rows, cols, score_cols)
         if not moves:
             return None
         
-        # Check for immediate win
         for move in moves:
             if self.is_winning_move(board, move, self.player, rows, cols, score_cols):
                 return move
         
-        # Check if we need to block opponent's win
-        opp_moves = self.get_all_valid_moves(board, self.opponent, rows, cols, score_cols)
-        critical_defensive_move = None
+        opp_moves = self.get_all_valid_moves_enhanced(board, self.opponent, rows, cols, score_cols)
         for opp_move in opp_moves:
             if self.is_winning_move(board, opp_move, self.opponent, rows, cols, score_cols):
-                # Find a move that prevents this
-                for our_move in moves:
-                    new_board = self.apply_move(board, our_move, self.player)
-                    opp_stones = self.count_stones_in_score_area(new_board, self.opponent, rows, cols, score_cols)
-                    if opp_stones < 3:  # Successfully blocks
-                        critical_defensive_move = our_move
-                        break
-                if critical_defensive_move:
-                    return critical_defensive_move
+                defensive_move = self.find_blocking_move(board, moves, opp_move, rows, cols, score_cols)
+                if defensive_move:
+                    return defensive_move
         
-        # Dynamic depth based on time and game phase
+        if self.is_opponent_defensive(board, rows, cols, score_cols):
+            aggressive_move = self.find_aggressive_river_push(board, moves, rows, cols, score_cols)
+            if aggressive_move:
+                return aggressive_move
+        
         game_phase = self.get_game_phase(board, rows, cols)
+        
         if current_player_time < 5:
             max_depth = 1
-        elif current_player_time < 10:
+        elif current_player_time < 15:
             max_depth = 2
         elif game_phase == "endgame":
             max_depth = 4
         elif game_phase == "midgame":
             max_depth = 3
-        else:  # opening
+        else:
             max_depth = 2
         
-        # Prioritize promising moves early
-        moves = self.order_moves_simple(board, moves, self.player, rows, cols, score_cols)
+        moves = self.order_moves_advanced(board, moves, self.player, rows, cols, score_cols)
         
-        # Only consider top moves to save time
-        max_moves_to_consider = min(10 if current_player_time > 20 else 5, len(moves))
-        moves = moves[:max_moves_to_consider]
+        if current_player_time > 20:
+            max_moves = min(12, len(moves))
+        else:
+            max_moves = min(8, len(moves))
+        
+        moves = moves[:max_moves]
         
         best_move = moves[0]
         best_score = float('-inf')
         
-        # Iterative deepening with aggressive pruning
         for depth in range(1, max_depth + 1):
-            if time.time() - start_time > time_limit * 0.8:
+            if time.time() - start_time > time_limit * 0.9:
                 break
                 
             alpha = float('-inf')
             beta = float('inf')
+            current_best_for_depth = None
             
-            for move in moves:
-                if time.time() - start_time > time_limit * 0.9:
+            for i, move in enumerate(moves):
+                if time.time() - start_time > time_limit:
                     break
                     
                 new_board = self.apply_move(board, move, self.player)
-                score = -self.negamax(new_board, depth - 1, -beta, -alpha, 
-                                     self.opponent, start_time, time_limit, 
-                                     rows, cols, score_cols, depth)
+                
+                if i == 0:
+                    score = -self.negamax_enhanced(new_board, depth - 1, -beta, -alpha, 
+                                                  self.opponent, start_time, time_limit, 
+                                                  rows, cols, score_cols, depth)
+                else:
+                    score = -self.negamax_enhanced(new_board, depth - 1, -alpha - 1, -alpha,
+                                                  self.opponent, start_time, time_limit,
+                                                  rows, cols, score_cols, depth)
+                    if alpha < score < beta:
+                        score = -self.negamax_enhanced(new_board, depth - 1, -beta, -score,
+                                                      self.opponent, start_time, time_limit,
+                                                      rows, cols, score_cols, depth)
                 
                 if score > best_score:
                     best_score = score
-                    best_move = move
+                    current_best_for_depth = move
                     
                 alpha = max(alpha, score)
-        
+                if alpha >= beta:
+                    break
+            
+            if current_best_for_depth:
+                best_move = current_best_for_depth
+                if best_move in moves:
+                    moves.remove(best_move)
+                moves.insert(0, best_move)
+
         return best_move
 
-    def negamax(self, board: List[List[Any]], depth: int, alpha: float, beta: float,
-                current_player: str, start_time: float, time_limit: float, 
-                rows: int, cols: int, score_cols: List[int], max_depth: int) -> float:
+    def negamax_enhanced(self, board: List[List[Any]], depth: int, alpha: float, beta: float,
+                         current_player: str, start_time: float, time_limit: float, 
+                         rows: int, cols: int, score_cols: List[int], max_depth: int) -> float:
         
-        # Time check
         if time.time() - start_time > time_limit:
-            return self.fast_evaluate(board, current_player, rows, cols, score_cols)
+            return self.evaluate_enhanced(board, current_player, rows, cols, score_cols)
         
-        # Terminal node check
         my_stones = self.count_stones_in_score_area(board, current_player, rows, cols, score_cols)
         opp = get_opponent(current_player)
         opp_stones = self.count_stones_in_score_area(board, opp, rows, cols, score_cols)
@@ -159,18 +190,15 @@ class StudentAgent(BaseAgent):
             return -10000 + (max_depth - depth) * 10
         
         if depth <= 0:
-            return self.fast_evaluate(board, current_player, rows, cols, score_cols)
+            return self.evaluate_enhanced(board, current_player, rows, cols, score_cols)
         
-        # Get moves and prune aggressively
-        moves = self.get_all_valid_moves(board, current_player, rows, cols, score_cols)
+        moves = self.get_all_valid_moves_enhanced(board, current_player, rows, cols, score_cols)
         if not moves:
-            return self.fast_evaluate(board, current_player, rows, cols, score_cols)
+            return self.evaluate_enhanced(board, current_player, rows, cols, score_cols)
         
-        # Order moves for better pruning
-        moves = self.order_moves_simple(board, moves, current_player, rows, cols, score_cols)
+        moves = self.order_moves_advanced(board, moves, current_player, rows, cols, score_cols)
         
-        # Only consider top moves at deeper levels
-        if depth < 2:
+        if depth <= 1:
             moves = moves[:5]
         else:
             moves = moves[:8]
@@ -179,220 +207,193 @@ class StudentAgent(BaseAgent):
         
         for move in moves:
             new_board = self.apply_move(board, move, current_player)
-            score = -self.negamax(new_board, depth - 1, -beta, -alpha,
-                                opp, start_time, time_limit,
-                                rows, cols, score_cols, max_depth)
+            score = -self.negamax_enhanced(new_board, depth - 1, -beta, -alpha,
+                                          opp, start_time, time_limit,
+                                          rows, cols, score_cols, max_depth)
             
             best_score = max(best_score, score)
             alpha = max(alpha, score)
             
-            if alpha >= beta:  # Beta cutoff
+            if alpha >= beta:
+                if depth not in self.killer_moves:
+                    self.killer_moves[depth] = []
+                if move not in self.killer_moves[depth]:
+                    self.killer_moves[depth].insert(0, move)
+                    if len(self.killer_moves[depth]) > 2:
+                        self.killer_moves[depth].pop()
                 break
         
         return best_score
 
     # ==============================================================
-    # SIMPLIFIED AND FASTER EVALUATION
+    # ENHANCED EVALUATION WITH RIVER CHAINS
     # ==============================================================
 
-    def fast_evaluate(self, board: List[List[Any]], current_player: str, 
-                     rows: int, cols: int, score_cols: List[int]) -> float:
-        """Streamlined evaluation focusing on key winning factors"""
+    def evaluate_enhanced(self, board: List[List[Any]], current_player: str, 
+                          rows: int, cols: int, score_cols: List[int]) -> float:
         score = 0.0
         opp = get_opponent(current_player)
         
-        # 1. Stones in scoring area (most important)
         my_scored = self.count_stones_in_score_area(board, current_player, rows, cols, score_cols)
         opp_scored = self.count_stones_in_score_area(board, opp, rows, cols, score_cols)
+        
         score += my_scored * 1000
-        score -= opp_scored * 1000
+        score -= opp_scored * 1100
         
-        # 2. Immediate threats and opportunities
-        if my_scored == 3:
-            score += 500  # One away from winning
-        if opp_scored == 3:
-            score -= 600  # Opponent one away from winning
+        if my_scored >= 4: return 10000
+        if opp_scored >= 4: return -10000
+        if my_scored == 3: score += 600
+        if opp_scored == 3: score -= 700
         
-        # 3. Stones ready to score (one move away)
-        my_ready = self.count_stones_ready_to_score(board, current_player, rows, cols, score_cols)
-        opp_ready = self.count_stones_ready_to_score(board, opp, rows, cols, score_cols)
-        score += my_ready * 50
-        score -= opp_ready * 50
+        my_chain_score = self.evaluate_river_chains(board, current_player, rows, cols, score_cols)
+        opp_chain_score = self.evaluate_river_chains(board, opp, rows, cols, score_cols)
+        score += my_chain_score * 80
+        score -= opp_chain_score * 80
         
-        # 4. Simple position evaluation
-        score += self.evaluate_position_simple(board, current_player, rows, cols, score_cols)
+        my_ready = self.count_stones_ready_to_score_enhanced(board, current_player, rows, cols, score_cols)
+        opp_ready = self.count_stones_ready_to_score_enhanced(board, opp, rows, cols, score_cols)
+        score += my_ready * 150
+        score -= opp_ready * 150
+        
+        score += self.evaluate_strategic_position(board, current_player, rows, cols, score_cols)
+        score += self.evaluate_river_network(board, current_player, rows, cols) * 10
+        score -= self.evaluate_river_network(board, opp, rows, cols) * 10
         
         return score
 
-    def count_stones_ready_to_score(self, board, player, rows, cols, score_cols):
-        """Optimized version that only checks stones that can score in one move"""
-        count = 0
-        target_row = top_score_row() if player == "circle" else bottom_score_row(rows)
-        
-        # Check adjacent rows
-        check_rows = [target_row + 1] if player == "circle" else [target_row - 1]
-        
-        for row in check_rows:
-            if 0 <= row < rows:
-                for col in score_cols:
-                    piece = board[row][col]
-                    if piece and piece.owner == player and piece.side == "stone":
-                        count += 1
-        
-        # Check pieces that can use rivers to reach
+    def evaluate_river_chains(self, board, player, rows, cols, score_cols):
+        total_score = 0.0
         for row in range(rows):
             for col in range(cols):
                 piece = board[row][col]
                 if piece and piece.owner == player and piece.side == "stone":
-                    # Quick check if near a river that points to score area
-                    if abs(row - target_row) <= 3:  # Only check nearby pieces
-                        count += 0.3  # Partial credit for being close
+                    best_path_score = self.find_best_river_path_to_score(
+                        board, row, col, player, rows, cols, score_cols)
+                    total_score += best_path_score
+        return total_score
+
+    def find_best_river_path_to_score(self, board, start_row, start_col, player, rows, cols, score_cols):
+        target_row = top_score_row() if player == "circle" else bottom_score_row(rows)
+        q = [(start_row, start_col, 0, 0.0)]
+        visited = {(start_row, start_col)}
+        max_quality = 0.0
+
+        while q:
+            row, col, depth, path_quality = q.pop(0)
+            if depth > 5: continue
+
+            is_near_target = any(abs(row - target_row) <= 1 and abs(col - sc) <= 1 for sc in score_cols)
+            if is_near_target:
+                 max_quality = max(max_quality, path_quality)
+                 continue
+
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                next_row, next_col = row + dr, col + dc
+                if in_bounds(next_col, next_row, rows, cols) and (next_row, next_col) not in visited:
+                    piece = board[next_row][next_col]
+                    if piece and piece.side == "river":
+                        visited.add((next_row, next_col))
+                        flow_quality = self.calculate_river_flow_quality(piece, next_row, next_col, target_row, player)
+                        q.append((next_row, next_col, depth + 1, path_quality + flow_quality))
+        return max_quality
+
+    def calculate_river_flow_quality(self, river_piece, row, col, target_row, player):
+        if not hasattr(river_piece, 'orientation'): return 0.1
         
+        if player == "circle": is_correct_vertical = row < target_row
+        else: is_correct_vertical = row > target_row
+            
+        if river_piece.orientation == "vertical": return 0.8 if is_correct_vertical else 0.4
+        elif river_piece.orientation == "horizontal": return 0.3
+        return 0.1
+
+    def count_stones_ready_to_score_enhanced(self, board, player, rows, cols, score_cols):
+        count = 0.0
+        target_row = top_score_row() if player == "circle" else bottom_score_row(rows)
+        
+        for col in score_cols:
+            check_row = target_row + 1 if player == "circle" else target_row - 1
+            if in_bounds(col, check_row, rows, cols):
+                piece = board[check_row][col]
+                if piece and piece.owner == player and piece.side == "stone":
+                    count += 1.0
+        
+        for row in range(rows):
+            for col in range(cols):
+                piece = board[row][col]
+                if piece and piece.owner == player and piece.side == "stone":
+                    river_path_quality = self.find_best_river_path_to_score(board, row, col, player, rows, cols, score_cols)
+                    if river_path_quality > 0.5: count += river_path_quality * 0.4
         return count
 
-    def evaluate_position_simple(self, board, player, rows, cols, score_cols):
-        """Simplified position evaluation"""
+    def evaluate_strategic_position(self, board, player, rows, cols, score_cols):
         score = 0.0
         target_row = top_score_row() if player == "circle" else bottom_score_row(rows)
-        center_col = cols // 2
         
         for row in range(rows):
             for col in range(cols):
                 piece = board[row][col]
                 if piece and piece.owner == player:
                     if piece.side == "stone":
-                        # Distance to target
-                        distance = abs(row - target_row)
-                        score += (10 - distance) * 2
-                        
-                        # Bonus for being in score columns
-                        if col in score_cols:
-                            score += 5
-                        
-                        # Slight center preference
-                        score -= abs(col - center_col) * 0.1
-                    else:  # river
-                        # Rivers are valuable for mobility
-                        score += 2
-                        # Vertical rivers more valuable for forward movement
-                        if player == "circle" and getattr(piece, 'orientation', None) == 'vertical':
-                            score += 1
-                        elif player == "square" and getattr(piece, 'orientation', None) == 'vertical':
-                            score += 1
-        
+                        row_distance = abs(row - target_row)
+                        score += (rows - row_distance) * 0.5
+                        if col in score_cols: score += 2
+                        if self.is_path_blocked_by_opponent(board, row, col, target_row, player): score -= 3
+                    else:
+                        score += 1
+                        if hasattr(piece, 'orientation') and piece.orientation == "vertical": score += 1
         return score
 
-    def is_winning_move(self, board, move, player, rows, cols, score_cols):
-        """Check if a move wins immediately"""
-        if move["action"] == "move" and "to" in move:
-            to_col, to_row = move["to"]
-            if is_own_score_cell(to_col, to_row, player, rows, cols, score_cols):
-                new_board = self.apply_move(board, move, player)
-                return self.count_stones_in_score_area(new_board, player, rows, cols, score_cols) >= 4
-        return False
-
-    def get_game_phase(self, board, rows, cols):
-        """Determine game phase for depth adjustment"""
-        total_pieces = sum(1 for r in range(rows) for c in range(cols) if board[r][c])
-        if total_pieces < 18:
-            return "opening"
-        elif total_pieces < 22:
-            return "midgame"
-        else:
-            return "endgame"
-
-    def order_moves_simple(self, board, moves, current_player, rows, cols, score_cols):
-        """Simple but effective move ordering"""
-        def move_priority(move):
-            priority = 0
-            
-            # Highest priority: moves to score area
-            if move["action"] == "move" and "to" in move:
-                to_col, to_row = move["to"]
-                if is_own_score_cell(to_col, to_row, current_player, rows, cols, score_cols):
-                    priority += 1000
-                    
-            # High priority: pushes that might score
-            if move["action"] == "push":
-                priority += 100
-                
-            # Medium priority: moves toward score area
-            if move["action"] == "move" and "to" in move:
-                to_col, to_row = move["to"]
-                target_row = top_score_row() if current_player == "circle" else bottom_score_row(rows)
-                distance = abs(to_row - target_row)
-                priority += (10 - distance) * 10
-                
-            # Small randomization to avoid predictability
-            priority += random.random() * 0.1
-            
-            return priority
+    def evaluate_river_network(self, board, player, rows, cols):
+        score, rivers = 0.0, []
+        for r in range(rows):
+            for c in range(cols):
+                p = board[r][c]
+                if p and p.owner == player and p.side == "river": rivers.append((r, c, p))
         
-        moves.sort(key=move_priority, reverse=True)
-        return moves
-
-    def count_stones_in_score_area(self, board, player, rows, cols, score_cols):
-        """Count stones in score area"""
-        count = 0
-        score_row = top_score_row() if player == "circle" else bottom_score_row(rows)
-        for col in score_cols:
-            if in_bounds(col, score_row, rows, cols):
-                piece = board[score_row][col]
-                if piece and piece.owner == player and piece.side == "stone":
-                    count += 1
-        return count
+        for i, (r1, c1, p1) in enumerate(rivers):
+            for j, (r2, c2, p2) in enumerate(rivers[i+1:], i+1):
+                if abs(r1 - r2) + abs(c1 - c2) <= 3:
+                    score += 0.5
+                    if hasattr(p1, 'orientation') and hasattr(p2, 'orientation') and p1.orientation != p2.orientation:
+                        score += 0.3
+        return score
 
     # ==============================================================
-    # MOVE GENERATION & UTILITIES (keep existing but optimize)
+    # ENHANCED MOVE GENERATION AND ORDERING
     # ==============================================================
 
-    def get_all_valid_moves(self, board: List[List[Any]], current_player: str,
-                           rows: int, cols: int, score_cols: List[int]) -> List[Dict[str, Any]]:
+    def get_all_valid_moves_enhanced(self, board: List[List[Any]], player: str, rows: int, cols: int, score_cols: List[int]) -> List[Dict[str, Any]]:
         moves = []
-        for row in range(rows):
-            for col in range(cols):
-                piece = board[row][col]
-                if piece and piece.owner == current_player:
-                    piece_moves = self.get_moves_for_piece(board, row, col, current_player, rows, cols, score_cols)
-                    moves.extend(piece_moves)
+        for r in range(rows):
+            for c in range(cols):
+                if board[r][c] and board[r][c].owner == player:
+                    moves.extend(self.get_moves_for_piece_enhanced(board, r, c, player, rows, cols, score_cols))
         return moves
 
-    def get_moves_for_piece(self, board: List[List[Any]], row: int, col: int, current_player: str,
-                           rows: int, cols: int, score_cols: List[int]) -> List[Dict[str, Any]]:
-        moves = []
-        piece = board[row][col]
-        if not piece or piece.owner != current_player:
-            return moves
+    def get_moves_for_piece_enhanced(self, board: List[List[Any]], row: int, col: int, player: str, rows: int, cols: int, score_cols: List[int]) -> List[Dict[str, Any]]:
+        moves, piece = [], board[row][col]
+        if not piece: return moves
 
-        directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-        for dr, dc in directions:
-            new_row, new_col = row + dr, col + dc
-            if not in_bounds(new_col, new_row, rows, cols):
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = row + dr, col + dc
+            if not in_bounds(nc, nr, rows, cols) or is_opponent_score_cell(nc, nr, player, rows, cols, score_cols):
                 continue
-            if is_opponent_score_cell(new_col, new_row, current_player, rows, cols, score_cols):
-                continue
-            target = board[new_row][new_col]
+            
+            target = board[nr][nc]
             if not target:
-                moves.append({"action": "move", "from": [col, row], "to": [new_col, new_row]})
+                moves.append({"action": "move", "from": [col, row], "to": [nc, nr]})
             elif target.side == "river":
-                destinations = self.trace_river_flow(board, new_row, new_col, row, col,
-                                                    current_player, rows, cols, score_cols)
-                for dest_row, dest_col in destinations:
-                    moves.append({"action": "move", "from": [col, row], "to": [dest_col, dest_row]})
+                for dr, dc_ in self.trace_river_flow_enhanced(board, nr, nc, row, col, player, rows, cols, score_cols):
+                    moves.append({"action": "move", "from": [col, row], "to": [dc_, dr]})
             elif target.side == "stone":
                 if piece.side == "stone":
-                    push_row, push_col = new_row + dr, new_col + dc
-                    if (in_bounds(push_col, push_row, rows, cols) and
-                        not board[push_row][push_col] and
-                        not is_opponent_score_cell(push_col, push_row, target.owner, rows, cols, score_cols)):
-                        moves.append({"action": "push", "from": [col, row], "to": [new_col, new_row],
-                                      "pushed_to": [push_col, push_row]})
+                    pr, pc = nr + dr, nc + dc
+                    if in_bounds(pc, pr, rows, cols) and not board[pr][pc] and not is_opponent_score_cell(pc, pr, target.owner, rows, cols, score_cols):
+                        moves.append({"action": "push", "from": [col, row], "to": [nc, nr], "pushed_to": [pc, pr]})
                 else:
-                    destinations = self.trace_river_flow(board, new_row, new_col, row, col,
-                                                        target.owner, rows, cols, score_cols)
-                    for dest_row, dest_col in destinations:
-                        moves.append({"action": "push", "from": [col, row], "to": [new_col, new_row],
-                                      "pushed_to": [dest_col, dest_row]})
+                    for dr, dc_ in self.trace_river_push_enhanced(board, nr, nc, piece, target.owner, rows, cols, score_cols):
+                        moves.append({"action": "push", "from": [col, row], "to": [nc, nr], "pushed_to": [dc_, dr]})
 
         if piece.side == "stone":
             moves.append({"action": "flip", "from": [col, row], "orientation": "horizontal"})
@@ -402,68 +403,169 @@ class StudentAgent(BaseAgent):
             moves.append({"action": "rotate", "from": [col, row]})
         return moves
 
-    def trace_river_flow(self, board, start_row, start_col, origin_row, origin_col,
-                         moving_player, rows, cols, score_cols):
+    def trace_river_flow_enhanced(self, board, start_row, start_col, origin_row, origin_col, player, rows, cols, score_cols):
+        destinations, q, visited = set(), [(start_row, start_col, 0)], {(start_row, start_col)}
+        while q:
+            r, c, depth = q.pop(0)
+            if depth > 5: continue
+            p = board[r][c]
+            if not p or p.side != "river": continue
+            
+            flow_dirs = [(-1, 0), (1, 0)] if hasattr(p, 'orientation') and p.orientation == "vertical" else [(0, -1), (0, 1)]
+            for dr, dc in flow_dirs:
+                cr, cc = r, c
+                while True:
+                    cr, cc = cr + dr, cc + dc
+                    if not in_bounds(cc, cr, rows, cols) or is_opponent_score_cell(cc, cr, player, rows, cols, score_cols): break
+                    target = board[cr][cc]
+                    if not target: destinations.add((cr, cc))
+                    else:
+                        if target.side == "river" and (cr, cc) not in visited:
+                            visited.add((cr, cc)); q.append((cr, cc, depth + 1))
+                        break
+        return list(destinations)
+
+    def trace_river_push_enhanced(self, board, target_row, target_col, river_piece, pushed_player, rows, cols, score_cols):
         destinations = []
-        directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-        for dr, dc in directions:
-            new_row, new_col = start_row + dr, start_col + dc
-            if (in_bounds(new_col, new_row, rows, cols) and
-                not board[new_row][new_col] and
-                not is_opponent_score_cell(new_col, new_row, moving_player, rows, cols, score_cols)):
-                destinations.append((new_row, new_col))
+        push_dirs = [(-1, 0), (1, 0)] if hasattr(river_piece, 'orientation') and river_piece.orientation == "vertical" else [(0, -1), (0, 1)]
+        
+        for dr, dc in push_dirs:
+            for dist in range(1, max(rows, cols)):
+                dest_row, dest_col = target_row + dr * dist, target_col + dc * dist
+                if not in_bounds(dest_col, dest_row, rows, cols) or is_opponent_score_cell(dest_col, dest_row, pushed_player, rows, cols, score_cols):
+                    break
+                
+                # *** NEW LOGIC: Don't push our own pieces too far past the goal ***
+                if pushed_player == self.player:
+                    if self.player == "circle" and dest_row < top_score_row(): break
+                    if self.player == "square" and dest_row > bottom_score_row(rows): break
+                
+                if not board[dest_row][dest_col]:
+                    destinations.append((dest_row, dest_col))
+                elif board[dest_row][dest_col].side != "river": break
         return destinations
 
-    def apply_move(self, board, move, current_player):
+    def order_moves_advanced(self, board, moves, current_player, rows, cols, score_cols):
+        def move_priority(move):
+            priority = 0
+            if self.is_winning_move(board, move, current_player, rows, cols, score_cols):
+                return 10000
+            
+            depth = self.turn_count
+            if depth in self.killer_moves and move in self.killer_moves[depth]:
+                priority += 5000
+
+            if move["action"] == "move" and "to" in move and is_own_score_cell(move["to"][0], move["to"][1], current_player, rows, cols, score_cols):
+                priority += 4000
+            
+            # *** NEW LOGIC: Prioritize horizontal pushes on opponents ***
+            if move["action"] == "push":
+                from_c, from_r = move['from']
+                to_c, to_r = move['to']
+                pushed_to_c, pushed_to_r = move['pushed_to']
+                from_piece = board[from_r][from_c]
+                pushed_piece = board[to_r][to_c]
+
+                if from_piece and from_piece.side == 'river':
+                    if pushed_piece and pushed_piece.owner == self.opponent:
+                        is_vertical = from_c == pushed_to_c
+                        if is_vertical: priority += 500   # Low priority for vertical opponent push
+                        else: priority += 2500            # High priority for horizontal path clearing
+                    else:
+                        priority += 2000                  # Normal priority for pushing own piece
+                else:
+                    priority += 500                       # Stone push
+            
+            if move["action"] == "flip" and "orientation" in move:
+                priority += 800 if move["orientation"] == "vertical" else 400
+            
+            if move["action"] == "move" and "to" in move:
+                target_row = top_score_row() if current_player == "circle" else bottom_score_row(rows)
+                old_dist = abs(move["from"][1] - target_row)
+                new_dist = abs(move["to"][1] - target_row)
+                if new_dist < old_dist: priority += (old_dist - new_dist) * 10
+            
+            return priority
+        return sorted(moves, key=move_priority, reverse=True)
+
+    # ==============================================================
+    # HELPER AND STRATEGY FUNCTIONS
+    # ==============================================================
+
+    def apply_move(self, board: List[List[Any]], move: Dict[str, Any], player: str) -> List[List[Any]]:
         new_board = copy.deepcopy(board)
-        from_col, from_row = move["from"]
+        fc, fr = move["from"]
+        p = new_board[fr][fc]
+        action = move["action"]
 
-        if move["action"] == "move":
-            to_col, to_row = move["to"]
-            new_board[to_row][to_col] = new_board[from_row][from_col]
-            new_board[from_row][from_col] = None
-        elif move["action"] == "push":
-            to_col, to_row = move["to"]
-            push_col, push_row = move["pushed_to"]
-            new_board[push_row][push_col] = new_board[to_row][to_col]
-            new_board[to_row][to_col] = new_board[from_row][from_col]
-            new_board[from_row][from_col] = None
-            if new_board[to_row][to_col].side == "river":
-                new_board[to_row][to_col].side = "stone"
-                if hasattr(new_board[to_row][to_col], "orientation"):
-                    new_board[to_row][to_col].orientation = None
-        elif move["action"] == "flip":
-            piece = new_board[from_row][from_col]
-            if piece.side == "stone":
-                piece.side = "river"
-                piece.orientation = move.get("orientation", None)
-            else:
-                piece.side = "stone"
-                piece.orientation = None
-        elif move["action"] == "rotate":
-            piece = new_board[from_row][from_col]
-            if piece.side == "river":
-                piece.orientation = "vertical" if piece.orientation == "horizontal" else "horizontal"
+        if action == "move":
+            tc, tr = move["to"]; new_board[tr][tc] = p; new_board[fr][fc] = None
+        elif action == "push":
+            tc, tr = move["to"]; ptc, ptr = move["pushed_to"]
+            pp = new_board[tr][tc]
+            new_board[ptr][ptc] = pp; new_board[tr][tc] = p; new_board[fr][fc] = None
+            if p.side == 'river': p.side, p.orientation = 'stone', None
+        elif action == "flip":
+            if p.side == "stone": p.side, p.orientation = "river", move["orientation"]
+            else: p.side, p.orientation = "stone", None
+        elif action == "rotate":
+            if hasattr(p, 'orientation'): p.orientation = "vertical" if p.orientation == "horizontal" else "horizontal"
         return new_board
+    
+    def is_winning_move(self, board, move, player, rows, cols, score_cols) -> bool:
+        if move['action'] not in ['move', 'push']: return False
+        temp_board = self.apply_move(board, move, player)
+        return self.count_stones_in_score_area(temp_board, player, rows, cols, score_cols) >= 4
+    
+    def find_blocking_move(self, board, my_moves, opp_winning_move, rows, cols, score_cols):
+        target_pos = tuple(opp_winning_move.get('to') or opp_winning_move.get('pushed_to'))
+        if not target_pos: return None
+        for move in my_moves:
+            if move.get('action') == 'move' and tuple(move.get('to')) == target_pos: return move
+            if move.get('action') == 'push' and tuple(move.get('pushed_to')) == target_pos: return move
+        return None
 
-    def order_moves(self, board, moves, current_player, rows, cols, score_cols):
-        def move_score(move):
-            if move["action"] == "move":
-                to_col, to_row = move["to"]
-                if is_own_score_cell(to_col, to_row, current_player, rows, cols, score_cols):
-                    return 1000
-            return random.random()
-        moves.sort(key=move_score, reverse=True)
-
-    def get_defensive_moves(self, board, moves, rows, cols, score_cols):
-        defensive = []
-        opp = self.opponent
+    def is_opponent_defensive(self, board, rows, cols, score_cols):
+        defensive_pieces = 0
+        for r in range(rows):
+            for c in range(cols):
+                p = board[r][c]
+                if p and p.owner == self.opponent:
+                    if (self.opponent == "circle" and r > rows // 2) or (self.opponent == "square" and r < rows // 2):
+                        defensive_pieces += 1
+        return defensive_pieces > 7
+    
+    def find_aggressive_river_push(self, board, moves, rows, cols, score_cols):
+        best_push, max_dist = None, -1
         for move in moves:
-            new_board = self.apply_move(board, move, self.player)
-            if not self.blocks_opponent_win(new_board, opp, rows, cols, score_cols):
-                defensive.append(move)
-        return defensive
+            if move['action'] == 'push':
+                fc, fr = move['from']; pc, pr = move['pushed_to']; p = board[fr][fc]
+                if p and p.side == 'river':
+                    dist = abs(pr - fr) + abs(pc - fc)
+                    if dist > max_dist: max_dist, best_push = dist, move
+        return best_push
 
-    def blocks_opponent_win(self, board, opp, rows, cols, score_cols):
-        opp_stones = self.count_stones_in_score_area(board, opp, rows, cols, score_cols)
-        return opp_stones < 4
+    def get_game_phase(self, board, rows, cols):
+        my_stones = self.count_stones_in_score_area(board, self.player, rows, cols, score_cols_for(cols))
+        opp_stones = self.count_stones_in_score_area(board, self.opponent, rows, cols, score_cols_for(cols))
+        total_scored = my_stones + opp_stones
+        if total_scored >= 4: return "endgame"
+        if total_scored >= 2: return "midgame"
+        return "opening"
+
+    def is_path_blocked_by_opponent(self, board, row, col, target_row, player):
+        step = 1 if target_row > row else -1
+        for r in range(row + step, target_row, step):
+            if in_bounds(col, r, len(board), len(board[0])) and board[r][col] and board[r][col].owner == self.opponent:
+                return True
+        return False
+        
+    def count_stones_in_score_area(self, board, player, rows, cols, score_cols):
+        count = 0
+        score_row = top_score_row() if player == "circle" else bottom_score_row(rows)
+        for x in score_cols:
+            if in_bounds(x, score_row, rows, cols):
+                p = board[score_row][x]
+                if p and p.owner == player and p.side == "stone":
+                    count += 1
+        return count
