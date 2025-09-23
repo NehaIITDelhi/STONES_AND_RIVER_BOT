@@ -1005,10 +1005,9 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
                 remaining_times={'circle': timers['circle'], 'square': timers['square']}
             )
             if winner in ("circle","square"):
-                msg = f"{winner.title()} wins! Scores — Circle: {game_scores['circle']:.1f}, Square: {game_scores['square']:.1f}"
+                msg = f"{winner.title()} wins in {turn} plies! Scores — Circle: {game_scores['circle']:.1f}, Square: {game_scores['square']:.1f}"
             else:
-                msg = f"Draw. Scores — Circle: {game_scores['circle']:.1f}, Square: {game_scores['square']:.1f}"
-
+                msg = f"Draw after {turn} plies. Scores — Circle: {game_scores['circle']:.1f}, Square: {game_scores['square']:.1f}"
 
 # ---------------- CLI interactive runner ----------------
 def run_cli(mode:str, circle_strategy:str, square_strategy:str, load_file:Optional[str], rows:int, cols:int, time_per_player:float):
@@ -1150,11 +1149,11 @@ def run_cli(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
     final_scores = compute_final_scores(board, winner, rows, cols, score_cols,
                                         remaining_times={'circle': timers['circle'], 'square': timers['square']})
     if winner:
-        print(f"\n{winner.title()} wins!")
+        print(f"\n{winner.title()} wins in {turn} plies!")
     else:
-        print("\nGame ended in a draw.")
+        print(f"\nGame ended in a draw after {turn} plies.")
     print(f"Final Scores -> Circle: {final_scores['circle']:.1f} | Square: {final_scores['square']:.1f}\n")
-
+    
 # ---------------- Entrypoint ----------------
 def main():
     ap = argparse.ArgumentParser()
