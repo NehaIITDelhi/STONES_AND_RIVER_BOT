@@ -992,9 +992,17 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
                                 msg=f"Selected {selected}"
                             else:
                                 msg="Invalid click"
-        turn += 1
-        if turn > 1000:
-            print("Turn limit reached -> draw"); break
+        if not game_over:
+            turn += 1
+            if turn > 1000:
+                print("Turn limit reached -> draw")
+                winner = None
+                game_over = True
+                break
+        else:
+            print("You won")
+            break
+        
 
         # --- DRAW ---
         draw_board(screen, board, rows, cols, score_cols, selected, highlights, msg, timers, current)
