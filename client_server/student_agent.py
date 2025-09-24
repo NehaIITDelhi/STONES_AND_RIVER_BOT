@@ -1,6 +1,7 @@
 import time
 import random
 import copy
+import hashlib
 from typing import List, Dict, Any, Optional, Tuple
 
 # ===================================================================
@@ -35,6 +36,23 @@ def is_own_score_cell(x: int, y: int, player: str, rows: int, cols: int, score_c
     else:
         return (y == bottom_score_row(rows)) and (x in score_cols)
 
+def board_hash(board: List[List[Any]]) -> str:
+    """Create a hash of the board state for loop detection"""
+    board_str = ""
+    for row in board:
+        for cell in row:
+            if cell is None:
+                board_str += "0"
+            else:
+                board_str += f"{cell.owner[0]}{cell.side[0]}"
+                if hasattr(cell, 'orientation') and cell.orientation:
+                    board_str += cell.orientation[0]
+    return hashlib.md5(board_str.encode()).hexdigest()
+
+def manhattan_distance(x1: int, y1: int, x2: int, y2: int) -> int:
+    """Calculate Manhattan distance between two points"""
+    return abs(x1 - x2) + abs(y1 - y2)
+
 # ===================================================================
 # AGENT BASE CLASS
 # ===================================================================
@@ -58,6 +76,9 @@ class StudentAgent(BaseAgent):
         self.history_table = {}
         self.river_chains_cache = {}
         self.turn_count = 0
+        self.board_history = []  # Store board states to prevent loops
+        self.move_history = []   # Store recent moves to avoid repetition
+        self.last_move = None    # Track the last move made
 
     # ==============================================================
     # MAIN SEARCH FUNCTION
@@ -72,6 +93,14 @@ class StudentAgent(BaseAgent):
             board = game_state["board"]
         else:
             board = game_state
+
+        # Track board history to prevent loops
+        current_board_hash = board_hash(board)
+        self.board_history.append(current_board_hash)
+        
+        # Keep only last 10 board states to prevent memory issues
+        if len(self.board_history) > 10:
+            self.board_history = self.board_history[-10:]
 
         start_time = time.time()
         
@@ -89,8 +118,14 @@ class StudentAgent(BaseAgent):
         if not moves:
             return None
         
+        # Filter out moves that create loops or repeat recent moves
+        filtered_moves = self.filter_loop_moves(board, moves, rows, cols, score_cols)
+        if filtered_moves:
+            moves = filtered_moves
+        
         for move in moves:
             if self.is_winning_move(board, move, self.player, rows, cols, score_cols):
+                self.last_move = move
                 return move
         
         opp_moves = self.get_all_valid_moves_enhanced(board, self.opponent, rows, cols, score_cols)
@@ -98,11 +133,13 @@ class StudentAgent(BaseAgent):
             if self.is_winning_move(board, opp_move, self.opponent, rows, cols, score_cols):
                 defensive_move = self.find_blocking_move(board, moves, opp_move, rows, cols, score_cols)
                 if defensive_move:
+                    self.last_move = defensive_move
                     return defensive_move
         
         if self.is_opponent_defensive(board, rows, cols, score_cols):
             aggressive_move = self.find_aggressive_river_push(board, moves, rows, cols, score_cols)
             if aggressive_move:
+                self.last_move = aggressive_move
                 return aggressive_move
         
         game_phase = self.get_game_phase(board, rows, cols)
@@ -171,7 +208,40 @@ class StudentAgent(BaseAgent):
                     moves.remove(best_move)
                 moves.insert(0, best_move)
 
+        self.last_move = best_move
         return best_move
+
+    def filter_loop_moves(self, board: List[List[Any]], moves: List[Dict[str, Any]], 
+                          rows: int, cols: int, score_cols: List[int]) -> List[Dict[str, Any]]:
+        """Filter out moves that would create loops or repeat recent positions"""
+        filtered_moves = []
+        
+        for move in moves:
+            # Don't repeat the exact same move as last turn
+            if self.last_move and self.moves_equal(move, self.last_move):
+                continue
+                
+            # Check if this move would create a board state we've seen recently
+            new_board = self.apply_move(board, move, self.player)
+            new_board_hash = board_hash(new_board)
+            
+            # Don't create a board state we've seen in the last 5 moves
+            if new_board_hash not in self.board_history[-5:]:
+                filtered_moves.append(move)
+        
+        return filtered_moves if filtered_moves else moves[:3]  # Fallback to first 3 moves if all filtered
+
+    def moves_equal(self, move1: Dict[str, Any], move2: Dict[str, Any]) -> bool:
+        """Check if two moves are identical"""
+        if move1["action"] != move2["action"]:
+            return False
+        if move1["from"] != move2["from"]:
+            return False
+        if "to" in move1 and "to" in move2:
+            return move1["to"] == move2["to"]
+        if "orientation" in move1 and "orientation" in move2:
+            return move1["orientation"] == move2["orientation"]
+        return True
 
     def negamax_enhanced(self, board: List[List[Any]], depth: int, alpha: float, beta: float,
                          current_player: str, start_time: float, time_limit: float, 
@@ -226,7 +296,7 @@ class StudentAgent(BaseAgent):
         return best_score
 
     # ==============================================================
-    # ENHANCED EVALUATION WITH RIVER CHAINS
+    # ENHANCED EVALUATION WITH RIVER CHAINS AND MANHATTAN DISTANCE
     # ==============================================================
 
     def evaluate_enhanced(self, board: List[List[Any]], current_player: str, 
@@ -255,11 +325,49 @@ class StudentAgent(BaseAgent):
         score += my_ready * 150
         score -= opp_ready * 150
         
+        # Add Manhattan distance evaluation
+        my_manhattan_score = self.evaluate_manhattan_distances(board, current_player, rows, cols, score_cols)
+        opp_manhattan_score = self.evaluate_manhattan_distances(board, opp, rows, cols, score_cols)
+        score += my_manhattan_score * 5  # Weight for Manhattan distance
+        score -= opp_manhattan_score * 5
+        
         score += self.evaluate_strategic_position(board, current_player, rows, cols, score_cols)
         score += self.evaluate_river_network(board, current_player, rows, cols) * 10
         score -= self.evaluate_river_network(board, opp, rows, cols) * 10
         
         return score
+
+    def evaluate_manhattan_distances(self, board: List[List[Any]], player: str, 
+                                   rows: int, cols: int, score_cols: List[int]) -> float:
+        """Evaluate stones based on their Manhattan distance to scoring area"""
+        total_distance_score = 0.0
+        target_row = top_score_row() if player == "circle" else bottom_score_row(rows)
+        
+        for row in range(rows):
+            for col in range(cols):
+                piece = board[row][col]
+                if piece and piece.owner == player and piece.side == "stone":
+                    # Find closest scoring position
+                    min_distance = float('inf')
+                    for score_col in score_cols:
+                        distance = manhattan_distance(col, row, score_col, target_row)
+                        min_distance = min(min_distance, distance)
+                    
+                    # Closer stones get higher scores (inverse relationship)
+                    if min_distance > 0:
+                        distance_score = max(0, 15 - min_distance)  # Max score of 15 for adjacent stones
+                        total_distance_score += distance_score
+                    
+                    # Bonus for stones already in scoring columns
+                    if col in score_cols:
+                        total_distance_score += 10
+                        
+                    # Extra bonus for stones close to target row
+                    row_distance = abs(row - target_row)
+                    if row_distance <= 3:
+                        total_distance_score += (4 - row_distance) * 3
+        
+        return total_distance_score
 
     def evaluate_river_chains(self, board, player, rows, cols, score_cols):
         total_score = 0.0
@@ -435,7 +543,7 @@ class StudentAgent(BaseAgent):
                 if not in_bounds(dest_col, dest_row, rows, cols) or is_opponent_score_cell(dest_col, dest_row, pushed_player, rows, cols, score_cols):
                     break
                 
-                # *** NEW LOGIC: Don't push our own pieces too far past the goal ***
+                # Don't push our own pieces too far past the goal
                 if pushed_player == self.player:
                     if self.player == "circle" and dest_row < top_score_row(): break
                     if self.player == "square" and dest_row > bottom_score_row(rows): break
@@ -458,7 +566,7 @@ class StudentAgent(BaseAgent):
             if move["action"] == "move" and "to" in move and is_own_score_cell(move["to"][0], move["to"][1], current_player, rows, cols, score_cols):
                 priority += 4000
             
-            # *** NEW LOGIC: Prioritize horizontal pushes on opponents ***
+            # Prioritize horizontal pushes on opponents
             if move["action"] == "push":
                 from_c, from_r = move['from']
                 to_c, to_r = move['to']
@@ -479,11 +587,21 @@ class StudentAgent(BaseAgent):
             if move["action"] == "flip" and "orientation" in move:
                 priority += 800 if move["orientation"] == "vertical" else 400
             
+            # Add Manhattan distance bonus to move priority
             if move["action"] == "move" and "to" in move:
                 target_row = top_score_row() if current_player == "circle" else bottom_score_row(rows)
                 old_dist = abs(move["from"][1] - target_row)
                 new_dist = abs(move["to"][1] - target_row)
-                if new_dist < old_dist: priority += (old_dist - new_dist) * 10
+                if new_dist < old_dist: 
+                    priority += (old_dist - new_dist) * 15  # Increased weight for getting closer
+                
+                # Additional bonus for moves toward scoring columns
+                to_col = move["to"][0]
+                from_col = move["from"][0]
+                if to_col in score_cols and from_col not in score_cols:
+                    priority += 25  # Bonus for entering scoring column
+                elif to_col in score_cols:
+                    priority += 10  # Smaller bonus for staying in scoring column
             
             return priority
         return sorted(moves, key=move_priority, reverse=True)
