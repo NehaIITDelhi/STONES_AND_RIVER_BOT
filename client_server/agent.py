@@ -17,6 +17,7 @@ import random
 import copy
 from typing import List, Dict, Any, Optional, Tuple
 from abc import ABC, abstractmethod
+from agent_anjalee import AnjaleeAgent
 
 # ==================== GAME UTILITIES ====================
 # These functions help agents understand and manipulate the game state
@@ -560,6 +561,8 @@ try:
     from student_agent import StudentAgent
 except ImportError:
     print("Warning: student_agent.py not found. Creating placeholder StudentAgent.")
+
+
     
     class StudentAgent(BaseAgent):
         """Placeholder StudentAgent - implement in student_agent.py"""
@@ -587,6 +590,8 @@ def get_agent(player: str, strategy: str) -> BaseAgent:
         return RandomAgent(player)
     elif strategy == "student":
         return StudentAgent(player)
+    elif strategy == "anjalee":          # <-- ADD THIS BLOCK
+        return AnjaleeAgent(player) 
     elif strategy == "student_cpp":
         try:
             import student_agent_cpp as student_agent
