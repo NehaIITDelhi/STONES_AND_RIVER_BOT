@@ -814,6 +814,13 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
                     current = opponent(current)
                     turn_start = time.time()
             draw_board(screen, board, rows, cols, score_cols, selected, highlights, msg, timers, current)
+            
+            # --- THIS IS THE FIX ---
+            # This line allows Pygame to process window events (like drawing and
+            # responding) while the AI is thinking, preventing the "not responding" error.
+            pygame.event.pump()
+            # ---------------------
+
             turn += 1
             if turn > 1000:
                 print("Turn limit reached -> draw"); break
@@ -1160,8 +1167,8 @@ def run_cli(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["hvh","hvai","aivai"], default="hvai")
-    ap.add_argument("--circle", choices=["random","student","student_cpp"], default="random")
-    ap.add_argument("--square", choices=["random","student","student_cpp"], default="random")
+    ap.add_argument("--circle", choices=["random","student","student_cpp","baseline"], default="random")
+    ap.add_argument("--square", choices=["random","student","student_cpp", "baseline"], default="random")
     ap.add_argument("--load", default=None)
     ap.add_argument("--nogui", action="store_true")
     ap.add_argument("--time", type=float, default=1.0, help="Time per player in minutes (default: 1.0)")
