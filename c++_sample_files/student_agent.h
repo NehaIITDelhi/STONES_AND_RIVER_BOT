@@ -82,15 +82,11 @@ class StudentAgent : public BaseAgent {
 private:
     std::map<int, std::vector<Move>> killer_moves;
     
-    // --- THIS IS THE FIX ---
     static std::deque<size_t> recent_positions;
     static const int MAX_HISTORY_SIZE = 20;
-    // --- END FIX ---
 
-    // --- THIS IS THE FIX ---
-    std::deque<Move> last_moves; // This is NOT static
+    std::deque<Move> last_moves;
     const int MAX_RECENT_MOVES = 5;
-    // --- END FIX ---
     
     int turn_count;
     std::chrono::time_point<std::chrono::high_resolution_clock> start_time_point;
@@ -114,22 +110,20 @@ private:
     int bottom_score_row(int rows) const;
     bool is_opponent_score_cell(int x, int y, const std::string& p, int rows, int cols, const std::vector<int>& score_cols) const;
     bool is_own_score_cell(int x, int y, const std::string& p, int rows, int cols, const std::vector<int>& score_cols) const;
-    size_t board_hash(const Board& board) const;
+    
+    size_t board_hash(const Board& board) const; // Baseline uses the slow hash
+    
     int manhattan_distance(int x1, int y1, int x2, int y2) const;
     Board deep_copy_board(const Board& board);
 
     // --- Main Logic ---
-    void update_move_history(const Move& move); // <-- THIS IS THE FIX
+    void update_move_history(const Move& move);
     bool moves_similar(const Move& move1, const Move& move2) const;
     
     double negamax_with_balance(Board& board, int depth, double alpha, double beta,
                                 const std::string& current_player, int rows, int cols, 
                                 const std::vector<int>& score_cols, int max_depth, 
                                 uint64_t& zobrist_hash);
-    
-    double quiescence_search(Board& board, double alpha, double beta,
-                             const std::string& current_player, int rows, int cols,
-                             const std::vector<int>& score_cols, uint64_t& zobrist_hash, int q_depth);
 
     // --- Evaluation ---
     double evaluate_balanced(const Board& board, const std::string& current_player, int rows, int cols, const std::vector<int>& score_cols);

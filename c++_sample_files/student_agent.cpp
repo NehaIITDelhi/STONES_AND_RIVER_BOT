@@ -1,16 +1,16 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h> // This handles optional, vector, and map
-#include "student_agent_improved.h" // <-- Make sure this matches your .h file name
+#include "student_agent.h"
 #include <sstream> // For string building
 #include <set>
 #include <random>
-#include <fstream> // For file I/O
+#include <fstream>
 #include <deque>
 
 namespace py = pybind11;
 
 // ===================================================================
-// NEW: DEFINE STATIC HISTORY DEQUE
+// DEFINE STATIC HISTORY DEQUE
 // ===================================================================
 std::deque<size_t> StudentAgent::recent_positions;
 
@@ -18,7 +18,6 @@ std::deque<size_t> StudentAgent::recent_positions;
 // CONSTRUCTOR - NOW INITS ZOBRIST
 // ===================================================================
 StudentAgent::StudentAgent(std::string p) : BaseAgent(p), turn_count(0), random_engine(std::random_device{}()) {
-    // We only need to init Zobrist once
     init_zobrist(20, 20); // Init for max board size
 }
 
@@ -37,7 +36,7 @@ void StudentAgent::init_zobrist(int rows, int cols) {
 }
 
 int StudentAgent::get_zobrist_index(const PiecePtr& piece) const {
-    if (!piece) return -1; // Should not happen
+    if (!piece) return -1;
     if (piece->owner == "circle") {
         if (piece->side == "stone") return 0;
         if (piece->orientation == "horizontal") return 1;
@@ -63,7 +62,7 @@ uint64_t StudentAgent::board_hash_zobrist(const Board& board, int rows, int cols
 }
 
 // ===================================================================
-// UTILITY FUNCTIONS (Unchanged)
+// UTILITY FUNCTIONS
 // ===================================================================
 
 bool StudentAgent::in_bounds(int x, int y, int rows, int cols) const {
@@ -88,6 +87,7 @@ bool StudentAgent::is_own_score_cell(int x, int y, const std::string& p, int row
     for (int col : score_cols) if (x == col) return true;
     return false;
 }
+// Baseline uses the slow hash for loop detection
 size_t StudentAgent::board_hash(const Board& board) const {
     std::stringstream ss;
     for (const auto& row : board) {
@@ -117,7 +117,7 @@ Board StudentAgent::deep_copy_board(const Board& board) {
 }
 
 // ===================================================================
-// MODIFIED: MAIN SEARCH FUNCTION
+// MAIN SEARCH FUNCTION (with Loop Prevention)
 // ===================================================================
 
 std::optional<Move> StudentAgent::choose(
@@ -128,34 +128,26 @@ std::optional<Move> StudentAgent::choose(
     turn_count++; // Internal turn count
     transposition_table.clear(); // Clear TT for each new move
 
-    // --- NEW: SHARED HISTORY LOGIC (Fix #1) ---
-    
-    // Helper to check if this is the starting board (any size)
+    // --- SHARED HISTORY LOGIC ---
     auto is_starting_board = [&](const Board& b) {
-        if (this->player != "circle") return false; // Only circle clears
-        
+        if (this->player != "circle") return false;
         int piece_count = 0;
         for (int r = 0; r < rows; ++r) {
             for (int c = 0; c < cols; ++c) {
                 if (b[r][c]) piece_count++;
             }
         }
-        // 24 (small), 28 (medium), or 32 (large)
         return (piece_count == 24 || piece_count == 28 || piece_count == 32);
     };
-
-    // If this is Turn 1 (Circle on a full board), clear the shared history.
     if (is_starting_board(board)) {
         recent_positions.clear();
     }
-    
-    // Add the *current* board state to the shared history
     size_t current_hash_std = board_hash(board);
     recent_positions.push_back(current_hash_std);
     if (recent_positions.size() > MAX_HISTORY_SIZE) {
         recent_positions.pop_front();
     }
-    // --- END NEW HISTORY LOGIC ---
+    // --- END HISTORY LOGIC ---
 
     // Adaptive time management
     if (current_player_time > 35) time_limit_seconds = 1.5;
@@ -184,7 +176,6 @@ std::optional<Move> StudentAgent::choose(
         }
     }
     
-    // No need to call filter_non_repeating_moves, negamax will handle it.
     std::string game_phase = get_game_phase(board, rows, cols, score_cols);
     int max_depth;
     if (current_player_time < 5) max_depth = 1;
@@ -253,25 +244,23 @@ std::optional<Move> StudentAgent::choose(
         }
     }
 
-    // --- NEW: FALLBACK FOR ALL-LOOP SCENARIO ---
-    // If best_score is still -9999, it means all our top moves were immediate loops.
-    // We break the cycle by picking a random move. (Fix #4)
+    // --- FALLBACK FOR ALL-LOOP SCENARIO ---
     if (best_score < -9000 && !moves.empty()) {
         std::shuffle(moves.begin(), moves.end(), random_engine);
         best_move = moves[0];
     }
-    // --- END NEW ---
+    // --- END ---
 
     update_move_history(best_move);
     return best_move;
 }
 
-// --- THIS IS THE FIX ---
+// --- Restored function ---
 void StudentAgent::update_move_history(const Move& move) {
     last_moves.push_back(move);
     if (last_moves.size() > MAX_RECENT_MOVES) last_moves.pop_front();
 }
-// --- END FIX ---
+// ---
 
 bool StudentAgent::moves_similar(const Move& move1, const Move& move2) const {
     if (move1.action != move2.action) return false;
@@ -283,7 +272,7 @@ bool StudentAgent::moves_similar(const Move& move1, const Move& move2) const {
 }
 
 // ===================================================================
-// MODIFIED: NEGAMAX IMPLEMENTATION (WITH REPETITION PENALTY)
+// NEGAMAX (with Repetition Penalty)
 // ===================================================================
 
 double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha, double beta,
@@ -317,11 +306,11 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
     if (my_stones >= 4) return 10000.0 - (max_depth - depth) * 10.0;
     if (opp_stones >= 4) return -10000.0 + (max_depth - depth) * 10.0;
 
-    // --- NEW: QUIESCENCE SEARCH ---
+    // --- BASELINE AGENT: No Quiescence Search ---
     if (depth <= 0) {
-        return quiescence_search(board, alpha, beta, current_player, rows, cols, score_cols, zobrist_hash, 2); // Max q-depth of 2
+        return evaluate_balanced(board, current_player, rows, cols, score_cols);
     }
-    // --- END NEW ---
+    // --- END ---
 
     auto moves = get_all_valid_moves_enhanced(board, current_player, rows, cols, score_cols);
     if (moves.empty()) {
@@ -341,7 +330,7 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
         double score;
         size_t new_hash_std = board_hash(board); // Use slow hash for history check
 
-        // --- NEW: REPETITION PENALTY LOGIC (Fix #1, #3) ---
+        // --- NEW: REPETITION PENALTY LOGIC ---
         bool found_in_history = false;
         
         // Check for immediate 2-ply repetition (A->B->A)
@@ -390,113 +379,34 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
     return best_score;
 }
 
-// ===================================================================
-// QUIESCENCE SEARCH (Unchanged)
-// ===================================================================
-
-double StudentAgent::quiescence_search(Board& board, double alpha, double beta,
-                                       const std::string& current_player, int rows, int cols,
-                                       const std::vector<int>& score_cols, uint64_t& zobrist_hash, int q_depth) 
-{
-    // --- Transposition Table Lookup ---
-    if (auto it = transposition_table.find(zobrist_hash); it != transposition_table.end()) {
-        TTEntry& entry = it->second;
-        if (entry.flag == TTFlag::EXACT) return entry.score;
-        if (entry.flag == TTFlag::LOWER_BOUND) alpha = std::max(alpha, entry.score);
-        else if (entry.flag == TTFlag::UPPER_BOUND) beta = std::min(beta, entry.score);
-        if (alpha >= beta) return entry.score;
-    }
-    
-    auto now = std::chrono::high_resolution_clock::now();
-    double time_spent = std::chrono::duration<double>(now - start_time_point).count();
-    if (time_spent > time_limit_seconds) {
-        return evaluate_balanced(board, current_player, rows, cols, score_cols);
-    }
-    
-    // --- Standing Pat (Base Score) ---
-    double best_score = evaluate_balanced(board, current_player, rows, cols, score_cols);
-    
-    // --- Base Cases ---
-    if (q_depth <= 0) {
-        return best_score;
-    }
-    if (best_score >= beta) {
-        return best_score; // Fail-high
-    }
-    alpha = std::max(alpha, best_score);
-    
-    // --- Generate and Filter Forcing Moves ---
-    auto all_moves = get_all_valid_moves_enhanced(board, current_player, rows, cols, score_cols);
-    std::vector<Move> forcing_moves;
-    for (const auto& move : all_moves) {
-        // A "forcing" move is a Push, or a move that scores a piece.
-        // We use a priority threshold; Pushes (1800+) and Scores (4000+)
-        if (get_move_priority(board, move, current_player, rows, cols, score_cols) > 1500) {
-            forcing_moves.push_back(move);
-        }
-    }
-    
-    if (forcing_moves.empty()) {
-        return best_score;
-    }
-    
-    for (const auto& move : forcing_moves) {
-        UndoInfo undo_data = apply_move_inplace(board, move, rows, cols, zobrist_hash);
-        
-        std::string opp = get_opponent(current_player);
-        double score = -quiescence_search(board, -beta, -alpha,
-                                          opp, rows, cols, score_cols, zobrist_hash, q_depth - 1);
-        
-        unapply_move(board, move, undo_data, rows, cols, zobrist_hash);
-
-        if (score > best_score) best_score = score;
-        if (score > alpha) alpha = score;
-        if (alpha >= beta) break;
-    }
-    
-    return best_score;
-}
-
 
 // ===================================================================
-// PHASE-AWARE EVALUATION (Unchanged)
+// BASELINE EVALUATION FUNCTION (Original, static weights)
 // ===================================================================
 
 double StudentAgent::evaluate_balanced(const Board& board, const std::string& current_player, int rows, int cols, const std::vector<int>& score_cols) {
-    
-    std::string game_phase = get_game_phase(board, rows, cols, score_cols);
-    double edge_control_weight = 100.0, defensive_pos_weight = 80.0, manhattan_dist_weight = 6.0;
-    double ready_to_score_weight = 150.0, balance_weight = 30.0, river_network_weight = 50.0;
-
-    if (game_phase == "endgame") {
-        ready_to_score_weight = 500.0; manhattan_dist_weight = 20.0;
-        edge_control_weight = 10.0; defensive_pos_weight = 20.0;
-    } else if (game_phase == "opening") {
-        defensive_pos_weight = 120.0; edge_control_weight = 130.0;
-        balance_weight = 50.0; ready_to_score_weight = 75.0;
-    }
-    
     double score = 0.0; std::string opp = get_opponent(current_player);
     int my_scored = count_stones_in_score_area(board, current_player, rows, cols, score_cols);
     int opp_scored = count_stones_in_score_area(board, opp, rows, cols, score_cols);
     score += my_scored * 1000.0; score -= opp_scored * 1100.0;
     if (my_scored >= 4) return 10000.0; if (opp_scored >= 4) return -10000.0;
     if (my_scored == 3) score += 500.0; if (opp_scored == 3) score -= 600.0;
-
-    score += evaluate_edge_control(board, current_player, rows, cols, score_cols) * edge_control_weight;
-    score += evaluate_defensive_position(board, current_player, rows, cols, score_cols) * defensive_pos_weight;
-    score += evaluate_manhattan_distances(board, current_player, rows, cols, score_cols) * manhattan_dist_weight;
-    score -= evaluate_manhattan_distances(board, opp, rows, cols, score_cols) * manhattan_dist_weight;
-    score += evaluate_river_network_balanced(board, current_player, rows, cols, score_cols) * river_network_weight;
-    score -= evaluate_river_network_balanced(board, opp, rows, cols, score_cols) * river_network_weight;
-    score += count_stones_ready_to_score(board, current_player, rows, cols, score_cols) * ready_to_score_weight;
-    score -= count_stones_ready_to_score(board, opp, rows, cols, score_cols) * ready_to_score_weight;
-    score += evaluate_balance_factor(board, current_player, rows, cols) * balance_weight;
-    
+    score += evaluate_edge_control(board, current_player, rows, cols, score_cols) * 100.0;
+    score += evaluate_defensive_position(board, current_player, rows, cols, score_cols) * 80.0;
+    score += evaluate_manhattan_distances(board, current_player, rows, cols, score_cols) * 6.0;
+    score -= evaluate_manhattan_distances(board, opp, rows, cols, score_cols) * 6.0;
+    score += evaluate_river_network_balanced(board, current_player, rows, cols, score_cols) * 50.0;
+    score -= evaluate_river_network_balanced(board, opp, rows, cols, score_cols) * 50.0;
+    score += count_stones_ready_to_score(board, current_player, rows, cols, score_cols) * 150.0;
+    score -= count_stones_ready_to_score(board, opp, rows, cols, score_cols) * 150.0;
+    score += evaluate_balance_factor(board, current_player, rows, cols) * 30.0;
     return score;
 }
 
-// --- (Evaluation helper functions are unchanged) ---
+// ===================================================================
+// ALL REMAINING FUNCTIONS ARE UNCHANGED (Unchanged)
+// ===================================================================
+
 double StudentAgent::evaluate_edge_control(const Board& board, const std::string& player, int rows, int cols, const std::vector<int>& score_cols) {
     double edge_score = 0.0; int target_row = (player == "circle") ? top_score_row() : bottom_score_row(rows);
     std::vector<int> edge_cols = {0, 1, cols - 2, cols - 1};
@@ -646,11 +556,6 @@ double StudentAgent::count_stones_ready_to_score(const Board& board, const std::
     }
     return count;
 }
-
-// ===================================================================
-// MOVE ORDERING (Refactored)
-// ===================================================================
-
 int StudentAgent::get_move_priority(const Board& board, const Move& move, const std::string& current_player, int rows, int cols, const std::vector<int>& score_cols) {
     int priority = 0;
     if (is_winning_move(board, move, current_player, rows, cols, score_cols)) return 10000;
@@ -700,7 +605,6 @@ int StudentAgent::get_move_priority(const Board& board, const Move& move, const 
     
     return priority;
 }
-
 std::vector<Move> StudentAgent::order_moves_with_edge_control(const Board& board, std::vector<Move> moves, const std::string& current_player, int rows, int cols, const std::vector<int>& score_cols) {
     std::sort(moves.begin(), moves.end(), [&](const Move& a, const Move& b) {
         return get_move_priority(board, a, current_player, rows, cols, score_cols) > 
@@ -708,11 +612,6 @@ std::vector<Move> StudentAgent::order_moves_with_edge_control(const Board& board
     });
     return moves;
 }
-
-// ===================================================================
-// STRATEGY & HELPER FUNCTIONS
-// ===================================================================
-
 std::string StudentAgent::get_game_phase(const Board& board, int rows, int cols, const std::vector<int>& score_cols) const {
     int my_stones = count_stones_in_score_area(board, this->player, rows, cols, score_cols);
     int opp_stones = count_stones_in_score_area(board, this->opponent, rows, cols, score_cols);
@@ -749,11 +648,6 @@ std::optional<Move> StudentAgent::find_blocking_move(const Board& board, const s
     }
     return std::nullopt;
 }
-
-// ===================================================================
-// MAKE/UNMAKE FUNCTIONS (Unchanged)
-// ===================================================================
-
 UndoInfo StudentAgent::apply_move_inplace(Board& board, const Move& move, int rows, int cols, uint64_t& hash) {
     int fr = move.from.second; int fc = move.from.first;
     auto piece = board[fr][fc];
@@ -819,7 +713,6 @@ UndoInfo StudentAgent::apply_move_inplace(Board& board, const Move& move, int ro
     }
     return undo;
 }
-
 void StudentAgent::unapply_move(Board& board, const Move& move, const UndoInfo& undo, int rows, int cols, uint64_t& hash) {
     int fr = move.from.second; int fc = move.from.first;
     if (move.action == Move::ActionType::MOVE) {
@@ -854,12 +747,6 @@ void StudentAgent::unapply_move(Board& board, const Move& move, const UndoInfo& 
         board[fr][fc] = piece;
     }
 }
-
-
-// ===================================================================
-// MOVE GENERATION (Unchanged)
-// ===================================================================
-
 std::vector<Move> StudentAgent::get_all_valid_moves_enhanced(const Board& board, const std::string& player, int rows, int cols, const std::vector<int>& score_cols) const {
     std::vector<Move> moves;
     for (int r = 0; r < rows; ++r) {
@@ -872,7 +759,6 @@ std::vector<Move> StudentAgent::get_all_valid_moves_enhanced(const Board& board,
     }
     return moves;
 }
-
 std::vector<Move> StudentAgent::_get_moves_for_piece(const Board& board, int row, int col, const std::string& player, int rows, int cols, const std::vector<int>& score_cols) const {
     std::vector<Move> moves; auto piece = board[row][col]; std::pair<int,int> from_pos = {col, row};
     int dr[] = {-1, 1, 0, 0}; int dc[] = {0, 0, -1, 1};
@@ -905,7 +791,6 @@ std::vector<Move> StudentAgent::_get_moves_for_piece(const Board& board, int row
     }
     return moves;
 }
-
 std::vector<std::pair<int, int>> StudentAgent::_trace_river_flow(const Board& board, int start_r, int start_c, const std::string& player, int rows, int cols, const std::vector<int>& score_cols) const {
     std::deque<std::pair<int, int>> q = {{start_r, start_c}}; std::set<std::pair<int, int>> visited_rivers = {{start_r, start_c}}; std::set<std::pair<int, int>> destinations;
     while (!q.empty()) {
@@ -927,7 +812,6 @@ std::vector<std::pair<int, int>> StudentAgent::_trace_river_flow(const Board& bo
     }
     return std::vector<std::pair<int, int>>(destinations.begin(), destinations.end());
 }
-
 std::vector<std::pair<int, int>> StudentAgent::_trace_river_push(const Board& board, int target_r, int target_c, const PiecePtr& river_piece, const std::string& pushed_player, int rows, int cols, const std::vector<int>& score_cols) const {
     std::set<std::pair<int, int>> destinations; std::vector<std::pair<int, int>> dirs;
     if (river_piece->orientation == "vertical") dirs = {{-1, 0}, {1, 0}}; else dirs = {{0, -1}, {0, 1}};

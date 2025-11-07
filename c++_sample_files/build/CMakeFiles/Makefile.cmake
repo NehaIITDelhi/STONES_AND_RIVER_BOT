@@ -72,4 +72,5 @@ set(CMAKE_MAKEFILE_PRODUCTS
 # Dependency information for all targets:
 set(CMAKE_DEPEND_INFO_FILES
   "CMakeFiles/student_agent_module.dir/DependInfo.cmake"
+  "CMakeFiles/baseline_agent.dir/DependInfo.cmake"
   )

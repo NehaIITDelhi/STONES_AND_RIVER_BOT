@@ -129,12 +129,25 @@ student_agent_module/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/student_agent_module.dir/build.make CMakeFiles/student_agent_module.dir/build
 .PHONY : student_agent_module/fast
 
+#=============================================================================
+# Target rules for targets named baseline_agent
+
+# Build rule for target.
+baseline_agent: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 baseline_agent
+.PHONY : baseline_agent
+
+# fast build rule for target.
+baseline_agent/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/baseline_agent.dir/build.make CMakeFiles/baseline_agent.dir/build
+.PHONY : baseline_agent/fast
+
 student_agent.o: student_agent.cpp.o
 .PHONY : student_agent.o
 
 # target to build an object file
 student_agent.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/student_agent_module.dir/build.make CMakeFiles/student_agent_module.dir/student_agent.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/baseline_agent.dir/build.make CMakeFiles/baseline_agent.dir/student_agent.cpp.o
 .PHONY : student_agent.cpp.o
 
 student_agent.i: student_agent.cpp.i
@@ -142,7 +155,7 @@ student_agent.i: student_agent.cpp.i
 
 # target to preprocess a source file
 student_agent.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/student_agent_module.dir/build.make CMakeFiles/student_agent_module.dir/student_agent.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/baseline_agent.dir/build.make CMakeFiles/baseline_agent.dir/student_agent.cpp.i
 .PHONY : student_agent.cpp.i
 
 student_agent.s: student_agent.cpp.s
@@ -150,8 +163,32 @@ student_agent.s: student_agent.cpp.s
 
 # target to generate assembly for a file
 student_agent.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/student_agent_module.dir/build.make CMakeFiles/student_agent_module.dir/student_agent.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/baseline_agent.dir/build.make CMakeFiles/baseline_agent.dir/student_agent.cpp.s
 .PHONY : student_agent.cpp.s
+
+student_agent_improved.o: student_agent_improved.cpp.o
+.PHONY : student_agent_improved.o
+
+# target to build an object file
+student_agent_improved.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/student_agent_module.dir/build.make CMakeFiles/student_agent_module.dir/student_agent_improved.cpp.o
+.PHONY : student_agent_improved.cpp.o
+
+student_agent_improved.i: student_agent_improved.cpp.i
+.PHONY : student_agent_improved.i
+
+# target to preprocess a source file
+student_agent_improved.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/student_agent_module.dir/build.make CMakeFiles/student_agent_module.dir/student_agent_improved.cpp.i
+.PHONY : student_agent_improved.cpp.i
+
+student_agent_improved.s: student_agent_improved.cpp.s
+.PHONY : student_agent_improved.s
+
+# target to generate assembly for a file
+student_agent_improved.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/student_agent_module.dir/build.make CMakeFiles/student_agent_module.dir/student_agent_improved.cpp.s
+.PHONY : student_agent_improved.cpp.s
 
 # Help Target
 help:
@@ -161,10 +198,14 @@ help:
 	@echo "... depend"
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
+	@echo "... baseline_agent"
 	@echo "... student_agent_module"
 	@echo "... student_agent.o"
 	@echo "... student_agent.i"
 	@echo "... student_agent.s"
+	@echo "... student_agent_improved.o"
+	@echo "... student_agent_improved.i"
+	@echo "... student_agent_improved.s"
 .PHONY : help
 
 

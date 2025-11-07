@@ -12,7 +12,7 @@ namespace py = pybind11;
 // ===================================================================
 // NEW: DEFINE STATIC HISTORY DEQUE
 // ===================================================================
-std::deque<size_t> StudentAgent::recent_positions;
+std::deque<uint64_t> StudentAgent::recent_positions; // <-- Storing Zobrist hashes
 
 // ===================================================================
 // CONSTRUCTOR - NOW INITS ZOBRIST
@@ -88,19 +88,9 @@ bool StudentAgent::is_own_score_cell(int x, int y, const std::string& p, int row
     for (int col : score_cols) if (x == col) return true;
     return false;
 }
-size_t StudentAgent::board_hash(const Board& board) const {
-    std::stringstream ss;
-    for (const auto& row : board) {
-        for (const auto& cell : row) {
-            if (!cell) ss << "0";
-            else {
-                ss << cell->owner[0] << cell->side[0];
-                if (!cell->orientation.empty()) ss << cell->orientation[0];
-            }
-        }
-    }
-    return std::hash<std::string>{}(ss.str());
-}
+// size_t StudentAgent::board_hash(const Board& board) const { // <-- REMOVED slow hash
+// ...
+// }
 int StudentAgent::manhattan_distance(int x1, int y1, int x2, int y2) const {
     return std::abs(x1 - x2) + std::abs(y1 - y2);
 }
@@ -128,7 +118,10 @@ std::optional<Move> StudentAgent::choose(
     turn_count++; // Internal turn count
     transposition_table.clear(); // Clear TT for each new move
 
-    // --- NEW: SHARED HISTORY LOGIC (Fix #1) ---
+    // Create the Zobrist hash for the *current* board
+    uint64_t current_zobrist_hash = board_hash_zobrist(board, rows, cols);
+
+    // --- NEW: SHARED HISTORY LOGIC (Using Zobrist) ---
     
     // Helper to check if this is the starting board (any size)
     auto is_starting_board = [&](const Board& b) {
@@ -150,8 +143,7 @@ std::optional<Move> StudentAgent::choose(
     }
     
     // Add the *current* board state to the shared history
-    size_t current_hash_std = board_hash(board);
-    recent_positions.push_back(current_hash_std);
+    recent_positions.push_back(current_zobrist_hash); // <-- Use Zobrist hash
     if (recent_positions.size() > MAX_HISTORY_SIZE) {
         recent_positions.pop_front();
     }
@@ -184,7 +176,6 @@ std::optional<Move> StudentAgent::choose(
         }
     }
     
-    // No need to call filter_non_repeating_moves, negamax will handle it.
     std::string game_phase = get_game_phase(board, rows, cols, score_cols);
     int max_depth;
     if (current_player_time < 5) max_depth = 1;
@@ -199,8 +190,8 @@ std::optional<Move> StudentAgent::choose(
     if (moves.size() > max_moves) moves.resize(max_moves);
 
     Board board_copy = deep_copy_board(board);
-    uint64_t current_zobrist_hash = board_hash_zobrist(board_copy, rows, cols);
-
+    // current_zobrist_hash is already calculated above
+    
     Move best_move = moves[0];
     double best_score = -std::numeric_limits<double>::infinity();
 
@@ -253,26 +244,19 @@ std::optional<Move> StudentAgent::choose(
         }
     }
 
-    // --- NEW: FALLBACK FOR ALL-LOOP SCENARIO ---
-    // If best_score is still -9999, it means all our top moves were immediate loops.
-    // We break the cycle by picking a random move. (Fix #4)
     if (best_score < -9000 && !moves.empty()) {
         std::shuffle(moves.begin(), moves.end(), random_engine);
         best_move = moves[0];
     }
-    // --- END NEW ---
 
     update_move_history(best_move);
     return best_move;
 }
 
-// --- THIS IS THE FIX ---
 void StudentAgent::update_move_history(const Move& move) {
     last_moves.push_back(move);
     if (last_moves.size() > MAX_RECENT_MOVES) last_moves.pop_front();
 }
-// --- END FIX ---
-
 bool StudentAgent::moves_similar(const Move& move1, const Move& move2) const {
     if (move1.action != move2.action) return false;
     if (move1.from == move2.from && move1.to == move2.to) return true;
@@ -283,7 +267,7 @@ bool StudentAgent::moves_similar(const Move& move1, const Move& move2) const {
 }
 
 // ===================================================================
-// MODIFIED: NEGAMAX IMPLEMENTATION (WITH REPETITION PENALTY)
+// MODIFIED: NEGAMAX IMPLEMENTATION (WITH FAST REPETITION PENALTY)
 // ===================================================================
 
 double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha, double beta,
@@ -317,11 +301,10 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
     if (my_stones >= 4) return 10000.0 - (max_depth - depth) * 10.0;
     if (opp_stones >= 4) return -10000.0 + (max_depth - depth) * 10.0;
 
-    // --- NEW: QUIESCENCE SEARCH ---
+    // --- Quiescence Search ---
     if (depth <= 0) {
         return quiescence_search(board, alpha, beta, current_player, rows, cols, score_cols, zobrist_hash, 2); // Max q-depth of 2
     }
-    // --- END NEW ---
 
     auto moves = get_all_valid_moves_enhanced(board, current_player, rows, cols, score_cols);
     if (moves.empty()) {
@@ -339,19 +322,18 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
         UndoInfo undo_data = apply_move_inplace(board, move, rows, cols, zobrist_hash);
         
         double score;
-        size_t new_hash_std = board_hash(board); // Use slow hash for history check
-
-        // --- NEW: REPETITION PENALTY LOGIC (Fix #1, #3) ---
+        
+        // --- NEW: REPETITION PENALTY LOGIC (Using Zobrist) ---
         bool found_in_history = false;
         
         // Check for immediate 2-ply repetition (A->B->A)
-        if (recent_positions.size() >= 2 && new_hash_std == recent_positions[recent_positions.size() - 2]) {
+        if (recent_positions.size() >= 2 && zobrist_hash == recent_positions[recent_positions.size() - 2]) {
             score = -9999; // Heavy penalty
             found_in_history = true;
         } else {
             // Check if it's any other recent position
-            for (const auto& hash : recent_positions) {
-                if (new_hash_std == hash) {
+            for (const uint64_t& hash : recent_positions) { // <-- Use Zobrist hash type
+                if (zobrist_hash == hash) {
                     score = -5000; // Milder penalty
                     found_in_history = true;
                     break;
@@ -398,7 +380,6 @@ double StudentAgent::quiescence_search(Board& board, double alpha, double beta,
                                        const std::string& current_player, int rows, int cols,
                                        const std::vector<int>& score_cols, uint64_t& zobrist_hash, int q_depth) 
 {
-    // --- Transposition Table Lookup ---
     if (auto it = transposition_table.find(zobrist_hash); it != transposition_table.end()) {
         TTEntry& entry = it->second;
         if (entry.flag == TTFlag::EXACT) return entry.score;
@@ -413,10 +394,8 @@ double StudentAgent::quiescence_search(Board& board, double alpha, double beta,
         return evaluate_balanced(board, current_player, rows, cols, score_cols);
     }
     
-    // --- Standing Pat (Base Score) ---
     double best_score = evaluate_balanced(board, current_player, rows, cols, score_cols);
     
-    // --- Base Cases ---
     if (q_depth <= 0) {
         return best_score;
     }
@@ -425,12 +404,9 @@ double StudentAgent::quiescence_search(Board& board, double alpha, double beta,
     }
     alpha = std::max(alpha, best_score);
     
-    // --- Generate and Filter Forcing Moves ---
     auto all_moves = get_all_valid_moves_enhanced(board, current_player, rows, cols, score_cols);
     std::vector<Move> forcing_moves;
     for (const auto& move : all_moves) {
-        // A "forcing" move is a Push, or a move that scores a piece.
-        // We use a priority threshold; Pushes (1800+) and Scores (4000+)
         if (get_move_priority(board, move, current_player, rows, cols, score_cols) > 1500) {
             forcing_moves.push_back(move);
         }
@@ -981,3 +957,4 @@ PYBIND11_MODULE(student_agent_module, m) {
              py::arg("score_cols"), py::arg("current_player_time"), 
              py::arg("opponent_time"));
 }
+

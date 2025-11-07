@@ -149,7 +149,7 @@ CMAKE_PROJECT_DESCRIPTION:STATIC=
 CMAKE_PROJECT_HOMEPAGE_URL:STATIC=
 
 //Value Computed by CMake
-CMAKE_PROJECT_NAME:STATIC=student_agent_module
+CMAKE_PROJECT_NAME:STATIC=student_agents
 
 //Value Computed by CMake
 CMAKE_PROJECT_VERSION:STATIC=
@@ -255,6 +255,15 @@ student_agent_module_IS_TOP_LEVEL:STATIC=ON
 
 //Value Computed by CMake
 student_agent_module_SOURCE_DIR:STATIC=/Users/neha/Desktop/Neha_study_material/col333/assignment/A2/c++_sample_files
+
+//Value Computed by CMake
+student_agents_BINARY_DIR:STATIC=/Users/neha/Desktop/Neha_study_material/col333/assignment/A2/c++_sample_files/build
+
+//Value Computed by CMake
+student_agents_IS_TOP_LEVEL:STATIC=ON
+
+//Value Computed by CMake
+student_agents_SOURCE_DIR:STATIC=/Users/neha/Desktop/Neha_study_material/col333/assignment/A2/c++_sample_files
 
 
 ########################

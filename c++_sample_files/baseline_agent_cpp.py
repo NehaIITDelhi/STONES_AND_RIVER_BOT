@@ -1,4 +1,4 @@
-import build.student_agent_improved_module as student_agent
+import build.baseline_agent as student_agent
 from typing import List, Dict, Any, Optional
 
 # This is the wrapper class that 'agent.py' will import and use.
