@@ -37,7 +37,7 @@ class StudentAgent:
                 else:
                     # Create a C++ Piece object using the data from the Python Piece
                     # (The py_piece is an object from gameEngine.py)
-                    cpp_piece_obj = CppPiece(py_piece.owner, py_piece.side, py_piece.orientation)
+                    cpp_piece_obj = CppPiece(py_piece.owner, py_piece.side, py_piece.orientation or "")
                     row_list.append(cpp_piece_obj)
             cpp_board.append(row_list)
         
