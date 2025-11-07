@@ -1,0 +1,45 @@
+
+Even though we have taken help from the  LLMs in terms of discussing ideas and coding practices, all our code is written by us(NEHA- 2023CS50205) & (AATISH- 2023CS10383).
+Chatgpt
+
+APPROACH OVERVIEW:
+
+Our Rivers and Stones bot implements a sophisticated minimax-based approach with several optimization techniques:
+
+1. SEARCH ALGORITHM:
+   - Negamax with alpha-beta pruning for efficient tree search
+   - Iterative deepening to make best use of available time
+   - Principal variation search for improved move ordering
+   - Adaptive depth control based on remaining time and game phase
+
+2. EVALUATION FUNCTION:
+   - Multi-component evaluation considering:
+     * Direct scoring opportunities (highest weight)
+     * Manhattan distances to scoring areas
+     * Edge control to prevent opponent flanking
+     * Defensive positioning and threat assessment
+     * River network connectivity and flow patterns
+     * Balance between offensive and defensive pieces
+
+3. MOVE ORDERING AND PRUNING:
+   - Killer move heuristic to prioritize previously successful moves
+   - History table for move ordering
+   - Smart filtering of repetitive moves to avoid loops
+   - Edge control prioritization in move evaluation
+
+4. TIME MANAGEMENT:
+   - Adaptive time allocation based on remaining time
+   - Dynamic depth adjustment for endgame scenarios
+   - Early termination when time limit approaches
+
+5. ANTI-REPETITION MEASURES:
+   - Board state hashing for loop detection
+   - Recent move history tracking
+   - Position repetition avoidance in move selection
+
+6. STRATEGIC CONSIDERATIONS:
+   - Game phase detection (opening/midgame/endgame)
+   - Immediate win/loss detection
+   - Defensive move prioritization when opponent threatens to win
+   - Balanced approach between offense and defense
+
