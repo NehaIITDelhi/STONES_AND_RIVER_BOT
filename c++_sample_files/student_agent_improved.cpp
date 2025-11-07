@@ -128,7 +128,7 @@ std::optional<Move> StudentAgent::choose(
     turn_count++; // Internal turn count
     transposition_table.clear(); // Clear TT for each new move
 
-    // --- NEW: SHARED HISTORY LOGIC ---
+    // --- NEW: SHARED HISTORY LOGIC (Fix #1) ---
     
     // Helper to check if this is the starting board (any size)
     auto is_starting_board = [&](const Board& b) {
@@ -266,10 +266,13 @@ std::optional<Move> StudentAgent::choose(
     return best_move;
 }
 
+// --- THIS IS THE FIX ---
 void StudentAgent::update_move_history(const Move& move) {
     last_moves.push_back(move);
     if (last_moves.size() > MAX_RECENT_MOVES) last_moves.pop_front();
 }
+// --- END FIX ---
+
 bool StudentAgent::moves_similar(const Move& move1, const Move& move2) const {
     if (move1.action != move2.action) return false;
     if (move1.from == move2.from && move1.to == move2.to) return true;
@@ -946,7 +949,7 @@ std::vector<std::pair<int, int>> StudentAgent::_trace_river_push(const Board& bo
 // PYBIND11 MODULE BINDINGS (Unchanged)
 // ===================================================================
 
-PYBIND11_MODULE(student_agent_improved_module, m) {
+PYBIND11_MODULE(student_agent_module, m) {
     m.doc() = "pybind11 module for StudentAgent";
 
     py::class_<Piece, std::shared_ptr<Piece>>(m, "Piece")
@@ -978,4 +981,3 @@ PYBIND11_MODULE(student_agent_improved_module, m) {
              py::arg("score_cols"), py::arg("current_player_time"), 
              py::arg("opponent_time"));
 }
-

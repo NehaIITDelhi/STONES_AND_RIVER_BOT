@@ -598,5 +598,21 @@ def get_agent(player: str, strategy: str) -> BaseAgent:
         else:
             print("C++ StudentAgent not available. Falling back to Python StudentAgent.")
             return StudentAgent(player)
+    elif strategy == "baseline":
+        try:
+            import baseline_agent_cpp as student_agent # Import your new wrapper
+            StudentAgentCpp = student_agent.StudentAgent
+        except ImportError:
+            StudentAgentCpp = None
+        if StudentAgentCpp:
+            return StudentAgentCpp(player)
+        else:
+            print("Baseline C++ Agent not found. Falling back to Python Student.")
+            # Fallback to the placeholder, not the main C++ agent
+            try:
+                from student_agent import StudentAgent as PyStudentAgent
+                return PyStudentAgent(player)
+            except ImportError:
+                return RandomAgent(player) # Ultimate fallback
     else:
-        raise ValueError(f"Unknown strategy: {strategy}. Available: random, student")
+        raise ValueError(f"Unknown strategy: {strategy}. Available: random, student, student_cpp, baseline")

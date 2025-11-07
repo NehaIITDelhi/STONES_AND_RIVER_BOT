@@ -1,11 +1,18 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h> // This handles optional, vector, and map
-#include "student_agent.h"
+#include "student_agent_improved.h" // <-- Make sure this matches your .h file name
 #include <sstream> // For string building
 #include <set>
 #include <random>
+#include <fstream> // For file I/O
+#include <deque>
 
 namespace py = pybind11;
+
+// ===================================================================
+// NEW: DEFINE STATIC HISTORY DEQUE
+// ===================================================================
+std::deque<size_t> StudentAgent::recent_positions;
 
 // ===================================================================
 // CONSTRUCTOR - NOW INITS ZOBRIST
@@ -16,7 +23,7 @@ StudentAgent::StudentAgent(std::string p) : BaseAgent(p), turn_count(0), random_
 }
 
 // ===================================================================
-// NEW: ZOBRIST HASHING FUNCTIONS
+// ZOBRIST HASHING FUNCTIONS
 // ===================================================================
 void StudentAgent::init_zobrist(int rows, int cols) {
     std::uniform_int_distribution<uint64_t> dist(0, std::numeric_limits<uint64_t>::max());
@@ -118,17 +125,37 @@ std::optional<Move> StudentAgent::choose(
     double current_player_time, double opponent_time) 
 {
     start_time_point = std::chrono::high_resolution_clock::now();
-    turn_count++;
+    turn_count++; // Internal turn count
     transposition_table.clear(); // Clear TT for each new move
 
-    // Update position history (using old hash for loop detection)
+    // --- NEW: SHARED HISTORY LOGIC (Fix #1) ---
+    
+    // Helper to check if this is the starting board (any size)
+    auto is_starting_board = [&](const Board& b) {
+        if (this->player != "circle") return false; // Only circle clears
+        
+        int piece_count = 0;
+        for (int r = 0; r < rows; ++r) {
+            for (int c = 0; c < cols; ++c) {
+                if (b[r][c]) piece_count++;
+            }
+        }
+        // 24 (small), 28 (medium), or 32 (large)
+        return (piece_count == 24 || piece_count == 28 || piece_count == 32);
+    };
+
+    // If this is Turn 1 (Circle on a full board), clear the shared history.
+    if (is_starting_board(board)) {
+        recent_positions.clear();
+    }
+    
+    // Add the *current* board state to the shared history
     size_t current_hash_std = board_hash(board);
     recent_positions.push_back(current_hash_std);
     if (recent_positions.size() > MAX_HISTORY_SIZE) {
-        size_t old_hash = recent_positions.front(); recent_positions.pop_front();
-        board_history_set.erase(old_hash);
+        recent_positions.pop_front();
     }
-    board_history_set.insert(current_hash_std);
+    // --- END NEW HISTORY LOGIC ---
 
     // Adaptive time management
     if (current_player_time > 35) time_limit_seconds = 1.5;
@@ -156,11 +183,8 @@ std::optional<Move> StudentAgent::choose(
             }
         }
     }
-
-    // Filter moves to prevent loops
-    auto filtered_moves = filter_non_repeating_moves(board, moves, rows, cols, score_cols);
-    if (!filtered_moves.empty()) moves = filtered_moves;
-
+    
+    // No need to call filter_non_repeating_moves, negamax will handle it.
     std::string game_phase = get_game_phase(board, rows, cols, score_cols);
     int max_depth;
     if (current_player_time < 5) max_depth = 1;
@@ -174,7 +198,6 @@ std::optional<Move> StudentAgent::choose(
     int max_moves = (current_player_time > 20) ? 10 : 6;
     if (moves.size() > max_moves) moves.resize(max_moves);
 
-    // --- NEW: Create ONE mutable copy of the board and get its hash ---
     Board board_copy = deep_copy_board(board);
     uint64_t current_zobrist_hash = board_hash_zobrist(board_copy, rows, cols);
 
@@ -195,15 +218,7 @@ std::optional<Move> StudentAgent::choose(
             time_spent = std::chrono::duration<double>(now - start_time_point).count();
             if (time_spent > time_limit_seconds) break;
 
-            // --- MODIFIED: Use Make/Unmake logic ---
             UndoInfo undo_data = apply_move_inplace(board_copy, moves[i], rows, cols, current_zobrist_hash);
-
-            // Check for loops (using old hash method, as Zobrist can have collisions)
-            size_t new_hash_std = board_hash(board_copy);
-            if (board_history_set.count(new_hash_std)) {
-                unapply_move(board_copy, moves[i], undo_data, rows, cols, current_zobrist_hash);
-                continue;
-            }
             
             double score;
             if (i == 0) {
@@ -219,7 +234,6 @@ std::optional<Move> StudentAgent::choose(
             }
 
             unapply_move(board_copy, moves[i], undo_data, rows, cols, current_zobrist_hash);
-            // --- END MODIFIED ---
 
             if (score > best_score) {
                 best_score = score;
@@ -239,19 +253,26 @@ std::optional<Move> StudentAgent::choose(
         }
     }
 
+    // --- NEW: FALLBACK FOR ALL-LOOP SCENARIO ---
+    // If best_score is still -9999, it means all our top moves were immediate loops.
+    // We break the cycle by picking a random move. (Fix #4)
+    if (best_score < -9000 && !moves.empty()) {
+        std::shuffle(moves.begin(), moves.end(), random_engine);
+        best_move = moves[0];
+    }
+    // --- END NEW ---
+
     update_move_history(best_move);
     return best_move;
 }
 
+// --- THIS IS THE FIX ---
 void StudentAgent::update_move_history(const Move& move) {
     last_moves.push_back(move);
     if (last_moves.size() > MAX_RECENT_MOVES) last_moves.pop_front();
 }
-std::vector<Move> StudentAgent::filter_non_repeating_moves(const Board& board, const std::vector<Move>& moves, int rows, int cols, const std::vector<int>& score_cols) {
-    // This function is tricky with make/unmake. It's simplified.
-    // The main loop already checks history.
-    return moves;
-}
+// --- END FIX ---
+
 bool StudentAgent::moves_similar(const Move& move1, const Move& move2) const {
     if (move1.action != move2.action) return false;
     if (move1.from == move2.from && move1.to == move2.to) return true;
@@ -262,7 +283,7 @@ bool StudentAgent::moves_similar(const Move& move1, const Move& move2) const {
 }
 
 // ===================================================================
-// MODIFIED: NEGAMAX IMPLEMENTATION
+// MODIFIED: NEGAMAX IMPLEMENTATION (WITH REPETITION PENALTY)
 // ===================================================================
 
 double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha, double beta,
@@ -272,7 +293,7 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
 {
     double original_alpha = alpha;
     
-    // --- NEW: Transposition Table Lookup ---
+    // --- Transposition Table Lookup ---
     if (auto it = transposition_table.find(zobrist_hash); it != transposition_table.end()) {
         TTEntry& entry = it->second;
         if (entry.depth >= depth) {
@@ -289,16 +310,18 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
         return evaluate_balanced(board, current_player, rows, cols, score_cols);
     }
 
+    // --- Win/Loss Check (Terminal Node) ---
     int my_stones = count_stones_in_score_area(board, current_player, rows, cols, score_cols);
     std::string opp = get_opponent(current_player);
     int opp_stones = count_stones_in_score_area(board, opp, rows, cols, score_cols);
-
     if (my_stones >= 4) return 10000.0 - (max_depth - depth) * 10.0;
     if (opp_stones >= 4) return -10000.0 + (max_depth - depth) * 10.0;
 
+    // --- NEW: QUIESCENCE SEARCH ---
     if (depth <= 0) {
-        return evaluate_balanced(board, current_player, rows, cols, score_cols);
+        return quiescence_search(board, alpha, beta, current_player, rows, cols, score_cols, zobrist_hash, 2); // Max q-depth of 2
     }
+    // --- END NEW ---
 
     auto moves = get_all_valid_moves_enhanced(board, current_player, rows, cols, score_cols);
     if (moves.empty()) {
@@ -313,20 +336,37 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
     double best_score = -std::numeric_limits<double>::infinity();
 
     for (const auto& move : moves) {
-        // --- MODIFIED: Use Make/Unmake logic ---
         UndoInfo undo_data = apply_move_inplace(board, move, rows, cols, zobrist_hash);
         
-        // Check for loops (simplified, using Zobrist)
-        if (transposition_table.count(zobrist_hash)) {
-            unapply_move(board, move, undo_data, rows, cols, zobrist_hash);
-            continue;
+        double score;
+        size_t new_hash_std = board_hash(board); // Use slow hash for history check
+
+        // --- NEW: REPETITION PENALTY LOGIC (Fix #1, #3) ---
+        bool found_in_history = false;
+        
+        // Check for immediate 2-ply repetition (A->B->A)
+        if (recent_positions.size() >= 2 && new_hash_std == recent_positions[recent_positions.size() - 2]) {
+            score = -9999; // Heavy penalty
+            found_in_history = true;
+        } else {
+            // Check if it's any other recent position
+            for (const auto& hash : recent_positions) {
+                if (new_hash_std == hash) {
+                    score = -5000; // Milder penalty
+                    found_in_history = true;
+                    break;
+                }
+            }
         }
         
-        double score = -negamax_with_balance(board, depth - 1, -beta, -alpha,
-                                            opp, rows, cols, score_cols, max_depth, zobrist_hash);
+        if (!found_in_history) {
+            // Not a loop, proceed with normal search
+            score = -negamax_with_balance(board, depth - 1, -beta, -alpha,
+                                          opp, rows, cols, score_cols, max_depth, zobrist_hash);
+        }
+        // --- END NEW ---
         
         unapply_move(board, move, undo_data, rows, cols, zobrist_hash);
-        // --- END MODIFIED ---
 
         if (score > best_score) best_score = score;
         if (score > alpha) alpha = score;
@@ -341,7 +381,7 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
         }
     }
 
-    // --- NEW: Transposition Table Store ---
+    // --- Transposition Table Store ---
     TTEntry entry = {best_score, depth, TTFlag::EXACT};
     if (best_score <= original_alpha) entry.flag = TTFlag::UPPER_BOUND;
     else if (best_score >= beta) entry.flag = TTFlag::LOWER_BOUND;
@@ -351,27 +391,112 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
 }
 
 // ===================================================================
-// EVALUATION FUNCTIONS (Unchanged)
+// QUIESCENCE SEARCH (Unchanged)
+// ===================================================================
+
+double StudentAgent::quiescence_search(Board& board, double alpha, double beta,
+                                       const std::string& current_player, int rows, int cols,
+                                       const std::vector<int>& score_cols, uint64_t& zobrist_hash, int q_depth) 
+{
+    // --- Transposition Table Lookup ---
+    if (auto it = transposition_table.find(zobrist_hash); it != transposition_table.end()) {
+        TTEntry& entry = it->second;
+        if (entry.flag == TTFlag::EXACT) return entry.score;
+        if (entry.flag == TTFlag::LOWER_BOUND) alpha = std::max(alpha, entry.score);
+        else if (entry.flag == TTFlag::UPPER_BOUND) beta = std::min(beta, entry.score);
+        if (alpha >= beta) return entry.score;
+    }
+    
+    auto now = std::chrono::high_resolution_clock::now();
+    double time_spent = std::chrono::duration<double>(now - start_time_point).count();
+    if (time_spent > time_limit_seconds) {
+        return evaluate_balanced(board, current_player, rows, cols, score_cols);
+    }
+    
+    // --- Standing Pat (Base Score) ---
+    double best_score = evaluate_balanced(board, current_player, rows, cols, score_cols);
+    
+    // --- Base Cases ---
+    if (q_depth <= 0) {
+        return best_score;
+    }
+    if (best_score >= beta) {
+        return best_score; // Fail-high
+    }
+    alpha = std::max(alpha, best_score);
+    
+    // --- Generate and Filter Forcing Moves ---
+    auto all_moves = get_all_valid_moves_enhanced(board, current_player, rows, cols, score_cols);
+    std::vector<Move> forcing_moves;
+    for (const auto& move : all_moves) {
+        // A "forcing" move is a Push, or a move that scores a piece.
+        // We use a priority threshold; Pushes (1800+) and Scores (4000+)
+        if (get_move_priority(board, move, current_player, rows, cols, score_cols) > 1500) {
+            forcing_moves.push_back(move);
+        }
+    }
+    
+    if (forcing_moves.empty()) {
+        return best_score;
+    }
+    
+    for (const auto& move : forcing_moves) {
+        UndoInfo undo_data = apply_move_inplace(board, move, rows, cols, zobrist_hash);
+        
+        std::string opp = get_opponent(current_player);
+        double score = -quiescence_search(board, -beta, -alpha,
+                                          opp, rows, cols, score_cols, zobrist_hash, q_depth - 1);
+        
+        unapply_move(board, move, undo_data, rows, cols, zobrist_hash);
+
+        if (score > best_score) best_score = score;
+        if (score > alpha) alpha = score;
+        if (alpha >= beta) break;
+    }
+    
+    return best_score;
+}
+
+
+// ===================================================================
+// PHASE-AWARE EVALUATION (Unchanged)
 // ===================================================================
 
 double StudentAgent::evaluate_balanced(const Board& board, const std::string& current_player, int rows, int cols, const std::vector<int>& score_cols) {
+    
+    std::string game_phase = get_game_phase(board, rows, cols, score_cols);
+    double edge_control_weight = 100.0, defensive_pos_weight = 80.0, manhattan_dist_weight = 6.0;
+    double ready_to_score_weight = 150.0, balance_weight = 30.0, river_network_weight = 50.0;
+
+    if (game_phase == "endgame") {
+        ready_to_score_weight = 500.0; manhattan_dist_weight = 20.0;
+        edge_control_weight = 10.0; defensive_pos_weight = 20.0;
+    } else if (game_phase == "opening") {
+        defensive_pos_weight = 120.0; edge_control_weight = 130.0;
+        balance_weight = 50.0; ready_to_score_weight = 75.0;
+    }
+    
     double score = 0.0; std::string opp = get_opponent(current_player);
     int my_scored = count_stones_in_score_area(board, current_player, rows, cols, score_cols);
     int opp_scored = count_stones_in_score_area(board, opp, rows, cols, score_cols);
     score += my_scored * 1000.0; score -= opp_scored * 1100.0;
     if (my_scored >= 4) return 10000.0; if (opp_scored >= 4) return -10000.0;
     if (my_scored == 3) score += 500.0; if (opp_scored == 3) score -= 600.0;
-    score += evaluate_edge_control(board, current_player, rows, cols, score_cols) * 100.0;
-    score += evaluate_defensive_position(board, current_player, rows, cols, score_cols) * 80.0;
-    score += evaluate_manhattan_distances(board, current_player, rows, cols, score_cols) * 6.0;
-    score -= evaluate_manhattan_distances(board, opp, rows, cols, score_cols) * 6.0;
-    score += evaluate_river_network_balanced(board, current_player, rows, cols, score_cols) * 50.0;
-    score -= evaluate_river_network_balanced(board, opp, rows, cols, score_cols) * 50.0;
-    score += count_stones_ready_to_score(board, current_player, rows, cols, score_cols) * 150.0;
-    score -= count_stones_ready_to_score(board, opp, rows, cols, score_cols) * 150.0;
-    score += evaluate_balance_factor(board, current_player, rows, cols) * 30.0;
+
+    score += evaluate_edge_control(board, current_player, rows, cols, score_cols) * edge_control_weight;
+    score += evaluate_defensive_position(board, current_player, rows, cols, score_cols) * defensive_pos_weight;
+    score += evaluate_manhattan_distances(board, current_player, rows, cols, score_cols) * manhattan_dist_weight;
+    score -= evaluate_manhattan_distances(board, opp, rows, cols, score_cols) * manhattan_dist_weight;
+    score += evaluate_river_network_balanced(board, current_player, rows, cols, score_cols) * river_network_weight;
+    score -= evaluate_river_network_balanced(board, opp, rows, cols, score_cols) * river_network_weight;
+    score += count_stones_ready_to_score(board, current_player, rows, cols, score_cols) * ready_to_score_weight;
+    score -= count_stones_ready_to_score(board, opp, rows, cols, score_cols) * ready_to_score_weight;
+    score += evaluate_balance_factor(board, current_player, rows, cols) * balance_weight;
+    
     return score;
 }
+
+// --- (Evaluation helper functions are unchanged) ---
 double StudentAgent::evaluate_edge_control(const Board& board, const std::string& player, int rows, int cols, const std::vector<int>& score_cols) {
     double edge_score = 0.0; int target_row = (player == "circle") ? top_score_row() : bottom_score_row(rows);
     std::vector<int> edge_cols = {0, 1, cols - 2, cols - 1};
@@ -523,56 +648,75 @@ double StudentAgent::count_stones_ready_to_score(const Board& board, const std::
 }
 
 // ===================================================================
-// MOVE ORDERING (Unchanged)
+// MOVE ORDERING (Refactored)
 // ===================================================================
+
+int StudentAgent::get_move_priority(const Board& board, const Move& move, const std::string& current_player, int rows, int cols, const std::vector<int>& score_cols) {
+    int priority = 0;
+    if (is_winning_move(board, move, current_player, rows, cols, score_cols)) return 10000;
+
+    if (killer_moves.count(turn_count)) {
+        const auto& killers = killer_moves[turn_count];
+        if (std::find(killers.begin(), killers.end(), move) != killers.end()) {
+            priority += 5000;
+        }
+    }
+
+    if (move.action == Move::ActionType::MOVE) {
+        if (is_own_score_cell(move.to.first, move.to.second, current_player, rows, cols, score_cols)) {
+            priority += 4000;
+        }
+    }
+
+    if (move.action == Move::ActionType::MOVE || move.action == Move::ActionType::PUSH) {
+        int to_col = (move.action == Move::ActionType::MOVE) ? move.to.first : move.pushed_to.first;
+        int to_row = (move.action == Move::ActionType::MOVE) ? move.to.second : move.pushed_to.second;
+        if (to_col == 0 || to_col == 1 || to_col == cols - 2 || to_col == cols - 1) {
+            priority += 300; int target_row = (current_player == "circle") ? top_score_row() : bottom_score_row(rows);
+            if (current_player == "circle" && (to_row > target_row && to_row < target_row + 3)) priority += 200;
+            else if (current_player == "square" && (to_row < target_row && to_row > target_row - 3)) priority += 200;
+        }
+    }
+
+    if (move.action == Move::ActionType::FLIP) {
+        int from_col = move.from.first; int from_row = move.from.second; int target_row = (current_player == "circle") ? top_score_row() : bottom_score_row(rows);
+        if (current_player == "circle" && (from_row > target_row && from_row < target_row + 3)) { priority += 250; if (move.orientation == "horizontal") priority += 150; }
+        else if (current_player == "square" && (from_row < target_row && from_row > target_row - 3)) { priority += 250; if (move.orientation == "horizontal") priority += 150; }
+        if (from_col == 0 || from_col == 1 || from_col == cols - 2 || from_col == cols - 1) priority += 180;
+    }
+    
+    if (move.action == Move::ActionType::PUSH) {
+        auto from_piece = board[move.from.second][move.from.first]; auto pushed_piece = board[move.to.second][move.to.first];
+        if (from_piece && pushed_piece) {
+            if (pushed_piece->owner == get_opponent(current_player)) { priority += 1800; if (move.from.second == move.to.second) priority += 400; }
+            else { int target_row = (current_player == "circle") ? top_score_row() : bottom_score_row(rows); int old_dist = std::abs(move.to.second - target_row); int new_dist = std::abs(move.pushed_to.second - target_row); if (new_dist < old_dist) priority += 1200; }
+        }
+    }
+
+    if (move.action == Move::ActionType::MOVE) {
+        int target_row = (current_player == "circle") ? top_score_row() : bottom_score_row(rows); int old_dist = std::abs(move.from.second - target_row); int new_dist = std::abs(move.to.second - target_row);
+        if (new_dist < old_dist) priority += (old_dist - new_dist) * 150;
+    }
+    
+    return priority;
+}
+
 std::vector<Move> StudentAgent::order_moves_with_edge_control(const Board& board, std::vector<Move> moves, const std::string& current_player, int rows, int cols, const std::vector<int>& score_cols) {
-    auto get_priority = [&](const Move& move) {
-        int priority = 0; if (is_winning_move(board, move, current_player, rows, cols, score_cols)) return 10000;
-        if (killer_moves.count(turn_count)) {
-            const auto& killers = killer_moves[turn_count];
-            if (std::find(killers.begin(), killers.end(), move) != killers.end()) priority += 5000;
-        }
-        if (move.action == Move::ActionType::MOVE && is_own_score_cell(move.to.first, move.to.second, current_player, rows, cols, score_cols)) priority += 4000;
-        if (move.action == Move::ActionType::MOVE || move.action == Move::ActionType::PUSH) {
-            int to_col = (move.action == Move::ActionType::MOVE) ? move.to.first : move.pushed_to.first;
-            int to_row = (move.action == Move::ActionType::MOVE) ? move.to.second : move.pushed_to.second;
-            if (to_col == 0 || to_col == 1 || to_col == cols - 2 || to_col == cols - 1) {
-                priority += 300; int target_row = (current_player == "circle") ? top_score_row() : bottom_score_row(rows);
-                if (current_player == "circle" && (to_row > target_row && to_row < target_row + 3)) priority += 200;
-                else if (current_player == "square" && (to_row < target_row && to_row > target_row - 3)) priority += 200;
-            }
-        }
-        if (move.action == Move::ActionType::FLIP) {
-            int from_col = move.from.first; int from_row = move.from.second; int target_row = (current_player == "circle") ? top_score_row() : bottom_score_row(rows);
-            if (current_player == "circle" && (from_row > target_row && from_row < target_row + 3)) { priority += 250; if (move.orientation == "horizontal") priority += 150; }
-            else if (current_player == "square" && (from_row < target_row && from_row > target_row - 3)) { priority += 250; if (move.orientation == "horizontal") priority += 150; }
-            if (from_col == 0 || from_col == 1 || from_col == cols - 2 || from_col == cols - 1) priority += 180;
-        }
-        if (move.action == Move::ActionType::PUSH) {
-            auto from_piece = board[move.from.second][move.from.first]; auto pushed_piece = board[move.to.second][move.to.first];
-            if (from_piece && pushed_piece) {
-                if (pushed_piece->owner == get_opponent(current_player)) { priority += 1800; if (move.from.second == move.to.second) priority += 400; }
-                else { int target_row = (current_player == "circle") ? top_score_row() : bottom_score_row(rows); int old_dist = std::abs(move.to.second - target_row); int new_dist = std::abs(move.pushed_to.second - target_row); if (new_dist < old_dist) priority += 1200; }
-            }
-        }
-        if (move.action == Move::ActionType::MOVE) {
-            int target_row = (current_player == "circle") ? top_score_row() : bottom_score_row(rows); int old_dist = std::abs(move.from.second - target_row); int new_dist = std::abs(move.to.second - target_row);
-            if (new_dist < old_dist) priority += (old_dist - new_dist) * 150;
-        }
-        return priority;
-    };
-    std::sort(moves.begin(), moves.end(), [&](const Move& a, const Move& b) { return get_priority(a) > get_priority(b); });
+    std::sort(moves.begin(), moves.end(), [&](const Move& a, const Move& b) {
+        return get_move_priority(board, a, current_player, rows, cols, score_cols) > 
+               get_move_priority(board, b, current_player, rows, cols, score_cols);
+    });
     return moves;
 }
 
 // ===================================================================
-// STRATEGY & HELPER FUNCTIONS (Unchanged)
+// STRATEGY & HELPER FUNCTIONS
 // ===================================================================
 
 std::string StudentAgent::get_game_phase(const Board& board, int rows, int cols, const std::vector<int>& score_cols) const {
     int my_stones = count_stones_in_score_area(board, this->player, rows, cols, score_cols);
     int opp_stones = count_stones_in_score_area(board, this->opponent, rows, cols, score_cols);
-    if (my_stones + opp_stones >= 5) return "endgame";
+    if (my_stones >= 3 || opp_stones >= 3) return "endgame";
     if (my_stones + opp_stones >= 2) return "midgame";
     return "opening";
 }
@@ -588,10 +732,8 @@ int StudentAgent::count_stones_in_score_area(const Board& board, const std::stri
 }
 bool StudentAgent::is_winning_move(const Board& board, const Move& move, const std::string& player, int rows, int cols, const std::vector<int>& score_cols) {
     if (move.action != Move::ActionType::MOVE && move.action != Move::ActionType::PUSH) return false;
-    // Use deep_copy for this check, as it's not part of the search
     Board temp_board = deep_copy_board(board);
     uint64_t dummy_hash = 0;
-    // We can't use apply_move_inplace on a const board, so we use a copy
     Board& board_ref = temp_board;
     apply_move_inplace(board_ref, move, rows, cols, dummy_hash);
     return count_stones_in_score_area(temp_board, player, rows, cols, score_cols) >= 4;
@@ -609,7 +751,7 @@ std::optional<Move> StudentAgent::find_blocking_move(const Board& board, const s
 }
 
 // ===================================================================
-// NEW: MAKE/UNMAKE FUNCTIONS
+// MAKE/UNMAKE FUNCTIONS (Unchanged)
 // ===================================================================
 
 UndoInfo StudentAgent::apply_move_inplace(Board& board, const Move& move, int rows, int cols, uint64_t& hash) {
@@ -617,23 +759,15 @@ UndoInfo StudentAgent::apply_move_inplace(Board& board, const Move& move, int ro
     auto piece = board[fr][fc];
     int piece_idx = get_zobrist_index(piece);
     int from_pos = fr * cols + fc;
-
     UndoInfo undo;
-    // undo.from = move.from; // <-- THIS WAS THE BUGGY LINE, NOW REMOVED
-    undo.pushed_to = {-1, -1}; // Default
-    
-    // 1. Remove piece from 'from'
+    undo.pushed_to = {-1, -1};
     board[fr][fc] = nullptr;
     hash ^= zobrist_table[piece_idx][from_pos];
-
     if (move.action == Move::ActionType::MOVE) {
         int tr = move.to.second; int tc = move.to.first;
         int to_pos = tr * cols + tc;
-        
         undo.to = move.to;
-        undo.piece_at_to = board[tr][tc]; // Should be null
-
-        // 2. Add piece to 'to'
+        undo.piece_at_to = board[tr][tc];
         board[tr][tc] = piece;
         hash ^= zobrist_table[piece_idx][to_pos];
     } 
@@ -642,25 +776,16 @@ UndoInfo StudentAgent::apply_move_inplace(Board& board, const Move& move, int ro
         int ptr = move.pushed_to.second; int ptc = move.pushed_to.first;
         int to_pos = tr * cols + tc;
         int pushed_to_pos = ptr * cols + ptc;
-        
         auto pushed_piece = board[tr][tc];
         int pushed_idx = get_zobrist_index(pushed_piece);
-        
         undo.to = move.to;
         undo.pushed_to = move.pushed_to;
         undo.piece_at_to = pushed_piece;
-        undo.piece_at_pushed_to = board[ptr][ptc]; // Should be null
+        undo.piece_at_pushed_to = board[ptr][ptc];
         undo.original_side = piece->side;
-
-        // 2. Remove pushed_piece from 'to'
-        // board[tr][tc] is set below
         hash ^= zobrist_table[pushed_idx][to_pos];
-
-        // 3. Add pushed_piece to 'pushed_to'
         board[ptr][ptc] = pushed_piece;
         hash ^= zobrist_table[pushed_idx][pushed_to_pos];
-
-        // 4. Add moving piece to 'to'
         board[tr][tc] = piece;
         if (piece->side == "river") {
             piece->side = "stone";
@@ -674,7 +799,6 @@ UndoInfo StudentAgent::apply_move_inplace(Board& board, const Move& move, int ro
     else if (move.action == Move::ActionType::FLIP) {
         undo.original_side = piece->side;
         undo.original_orientation = piece->orientation;
-
         if (piece->side == "stone") {
             piece->side = "river";
             piece->orientation = move.orientation;
@@ -682,60 +806,40 @@ UndoInfo StudentAgent::apply_move_inplace(Board& board, const Move& move, int ro
             piece->side = "stone";
             piece->orientation = "";
         }
-
-        // 2. Add modified piece back to 'from'
         int new_piece_idx = get_zobrist_index(piece);
         board[fr][fc] = piece;
         hash ^= zobrist_table[new_piece_idx][from_pos];
     }
     else if (move.action == Move::ActionType::ROTATE) {
         undo.original_orientation = piece->orientation;
-
         piece->orientation = (piece->orientation == "horizontal") ? "vertical" : "horizontal";
-
-        // 2. Add modified piece back to 'from'
         int new_piece_idx = get_zobrist_index(piece);
         board[fr][fc] = piece;
         hash ^= zobrist_table[new_piece_idx][from_pos];
     }
-    
     return undo;
 }
 
 void StudentAgent::unapply_move(Board& board, const Move& move, const UndoInfo& undo, int rows, int cols, uint64_t& hash) {
     int fr = move.from.second; int fc = move.from.first;
-    
     if (move.action == Move::ActionType::MOVE) {
         int tr = move.to.second; int tc = move.to.first;
-        auto piece = board[tr][tc]; // The piece that moved
-        
-        // 1. Remove piece from 'to'
+        auto piece = board[tr][tc];
         hash ^= zobrist_table[get_zobrist_index(piece)][tr * cols + tc];
-        board[tr][tc] = undo.piece_at_to; // Should be null
-        
-        // 2. Add piece back to 'from'
+        board[tr][tc] = undo.piece_at_to;
         hash ^= zobrist_table[get_zobrist_index(piece)][fr * cols + fc];
         board[fr][fc] = piece;
     }
     else if (move.action == Move::ActionType::PUSH) {
         int tr = move.to.second; int tc = move.to.first;
         int ptr = move.pushed_to.second; int ptc = move.pushed_to.first;
-        
         auto moving_piece = board[tr][tc];
         auto pushed_piece = board[ptr][ptc];
-        
-        // 1. Remove moving_piece from 'to'
         hash ^= zobrist_table[get_zobrist_index(moving_piece)][tr * cols + tc];
-        board[tr][tc] = undo.piece_at_to; // Restore pushed_piece
-        
-        // 2. Add pushed_piece back to 'to'
+        board[tr][tc] = undo.piece_at_to;
         hash ^= zobrist_table[get_zobrist_index(pushed_piece)][tr * cols + tc];
-        
-        // 3. Remove pushed_piece from 'pushed_to'
         hash ^= zobrist_table[get_zobrist_index(pushed_piece)][ptr * cols + ptc];
-        board[ptr][ptc] = undo.piece_at_pushed_to; // Should be null
-        
-        // 4. Add moving_piece back to 'from' and restore its state
+        board[ptr][ptc] = undo.piece_at_pushed_to;
         moving_piece->side = undo.original_side;
         moving_piece->orientation = undo.original_orientation;
         hash ^= zobrist_table[get_zobrist_index(moving_piece)][fr * cols + fc];
@@ -743,15 +847,9 @@ void StudentAgent::unapply_move(Board& board, const Move& move, const UndoInfo& 
     }
     else if (move.action == Move::ActionType::FLIP || move.action == Move::ActionType::ROTATE) {
         auto piece = board[fr][fc];
-        
-        // 1. Remove modified piece from 'from'
         hash ^= zobrist_table[get_zobrist_index(piece)][fr * cols + fc];
-        
-        // 2. Restore its state
         piece->side = undo.original_side;
         piece->orientation = undo.original_orientation;
-        
-        // 3. Add original piece back to 'from'
         hash ^= zobrist_table[get_zobrist_index(piece)][fr * cols + fc];
         board[fr][fc] = piece;
     }
@@ -848,7 +946,7 @@ std::vector<std::pair<int, int>> StudentAgent::_trace_river_push(const Board& bo
 
 
 // ===================================================================
-// PYBIND11 MODULE BINDINGS (Corrected)
+// PYBIND11 MODULE BINDINGS (Unchanged)
 // ===================================================================
 
 PYBIND11_MODULE(student_agent_module, m) {
@@ -871,7 +969,7 @@ PYBIND11_MODULE(student_agent_module, m) {
     py::class_<Move>(m, "Move")
         .def(py::init<>())
         .def_readwrite("action", &Move::action)
-        .def_readwrite("from_pos", &Move::from) // <-- THIS WAS THE BUGGY LINE, NOW FIXED
+        .def_readwrite("from_pos", &Move::from) 
         .def_readwrite("to_pos", &Move::to)
         .def_readwrite("pushed_to", &Move::pushed_to)
         .def_readwrite("orientation", &Move::orientation);
