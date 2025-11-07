@@ -1017,6 +1017,17 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
             else:
                 msg = f"Draw. Scores — Circle: {game_scores['circle']:.1f}, Square: {game_scores['square']:.1f}"
 
+            draw_board(screen, board, rows, cols, score_cols, selected, highlights, msg, timers, current)
+
+            # 2. Print the final message to the command line
+            print(msg) 
+
+            # 3. If in AI-vs-AI mode, pause to show the result, then exit.
+            if mode == "aivai":
+                print("AI vs AI game finished. Exiting GUI in 3 seconds.")
+                pygame.time.wait(3000) # Pause for 3 seconds
+                break # Exit the while True loop
+
 
 # ---------------- CLI interactive runner ----------------
 def run_cli(mode:str, circle_strategy:str, square_strategy:str, load_file:Optional[str], rows:int, cols:int, time_per_player:float):
