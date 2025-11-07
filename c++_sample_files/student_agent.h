@@ -13,6 +13,7 @@
 #include <chrono> // For time
 #include <functional> // For std::hash
 #include <limits> // For infinity
+#include <random> // For Zobrist Hashing
 
 // ===================================================================
 // HELPER STRUCTURES
@@ -70,6 +71,30 @@ struct Move {
 };
 
 // ===================================================================
+// NEW: UNDOINFO STRUCT (for Make/Unmake)
+// ===================================================================
+struct UndoInfo {
+    std::pair<int, int> to;
+    std::pair<int, int> pushed_to;
+    PiecePtr piece_at_to;
+    PiecePtr piece_at_pushed_to;
+    std::string original_side;
+    std::string original_orientation;
+};
+
+// ===================================================================
+// NEW: TRANSPOSITION TABLE STRUCTS
+// ===================================================================
+enum class TTFlag { EXACT, LOWER_BOUND, UPPER_BOUND };
+
+struct TTEntry {
+    double score;
+    int depth;
+    TTFlag flag;
+};
+
+
+// ===================================================================
 // BASE AGENT (for compatibility)
 // ===================================================================
 
@@ -108,6 +133,18 @@ private:
     std::chrono::time_point<std::chrono::high_resolution_clock> start_time_point;
     double time_limit_seconds;
 
+    // --- NEW: Zobrist & Transposition Table ---
+    static const int MAX_BOARD_SIZE = 20 * 20; // 17x16 is max
+    static const int NUM_PIECE_TYPES = 6; // C-Stone, C-River-H, C-River-V, S-Stone, S-River-H, S-River-V
+    
+    std::map<uint64_t, TTEntry> transposition_table;
+    std::vector<std::vector<uint64_t>> zobrist_table;
+    std::mt19937_64 random_engine;
+    
+    void init_zobrist(int rows, int cols);
+    int get_zobrist_index(const PiecePtr& piece) const;
+    uint64_t board_hash_zobrist(const Board& board, int rows, int cols) const;
+
     // --- Utility Functions ---
     bool in_bounds(int x, int y, int rows, int cols) const;
     std::vector<int> score_cols_for(int cols) const; // Assuming 4 spaces
@@ -115,18 +152,19 @@ private:
     int bottom_score_row(int rows) const;
     bool is_opponent_score_cell(int x, int y, const std::string& p, int rows, int cols, const std::vector<int>& score_cols) const;
     bool is_own_score_cell(int x, int y, const std::string& p, int rows, int cols, const std::vector<int>& score_cols) const;
-    size_t board_hash(const Board& board) const;
+    size_t board_hash(const Board& board) const; // Kept for loop detection
     int manhattan_distance(int x1, int y1, int x2, int y2) const;
-    Board deep_copy_board(const Board& board);
+    Board deep_copy_board(const Board& board); // Kept for one-time copy
 
     // --- Main Logic ---
     void update_move_history(const Move& move);
     std::vector<Move> filter_non_repeating_moves(const Board& board, const std::vector<Move>& moves, int rows, int cols, const std::vector<int>& score_cols);
     bool moves_similar(const Move& move1, const Move& move2) const;
     
-    double negamax_with_balance(Board board, int depth, double alpha, double beta,
+    double negamax_with_balance(Board& board, int depth, double alpha, double beta,
                                 const std::string& current_player, int rows, int cols, 
-                                const std::vector<int>& score_cols, int max_depth);
+                                const std::vector<int>& score_cols, int max_depth, 
+                                uint64_t& zobrist_hash);
     
     // --- Evaluation ---
     double evaluate_balanced(const Board& board, const std::string& current_player, int rows, int cols, const std::vector<int>& score_cols);
@@ -149,10 +187,13 @@ private:
     int count_stones_in_score_area(const Board& board, const std::string& player, int rows, int cols, const std::vector<int>& score_cols) const;
     bool is_winning_move(const Board& board, const Move& move, const std::string& player, int rows, int cols, const std::vector<int>& score_cols);
     std::optional<Move> find_blocking_move(const Board& board, const std::vector<Move>& my_moves, const Move& opp_winning_move, int rows, int cols, const std::vector<int>& score_cols);
-    Board apply_move(const Board& board, const Move& move, const std::string& player);
+    
+    // --- NEW: Make/Unmake move functions ---
+    UndoInfo apply_move_inplace(Board& board, const Move& move, int rows, int cols, uint64_t& hash);
+    void unapply_move(Board& board, const Move& move, const UndoInfo& undo, int rows, int cols, uint64_t& hash);
 
 public:
-    StudentAgent(std::string p) : BaseAgent(p), turn_count(0) {}
+    StudentAgent(std::string p); // Modified to init Zobrist
 
     std::optional<Move> choose(
         const Board& board, int rows, int cols, const std::vector<int>& score_cols,
