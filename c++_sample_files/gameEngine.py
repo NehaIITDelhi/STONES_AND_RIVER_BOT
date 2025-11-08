@@ -733,12 +733,10 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
     window_width = max(800, cols*CELL + MARGIN*2 + 200)
     window_height = max(600, rows*CELL + MARGIN*2 + 100)
     screen = pygame.display.set_mode((window_width, window_height))
-    pygame.display.set_caption(f"🎮 River and Stones - {mode.upper()} Mode")  # ADDED: set window caption
+    pygame.display.set_caption(f"🎮 River and Stones - {mode.upper()} Mode")
 
     clock = pygame.time.Clock()
     players = {"circle":"human","square":"human"}
-    # if mode == "hvai": players["square"]="ai"
-    # elif mode == "aivai": players = {"circle":"ai","square":"ai"}
     if mode=="aivai": players={"circle":"ai","square":"ai"}
     elif mode=="hvh": players={"circle":"human","square":"human"}
     else:
@@ -753,6 +751,10 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
     if players["square"]=="ai": agents["square"] = agent_square
 
     timers = {"circle": time_per_player, "square": time_per_player}
+    
+    # --- NEW: TOTAL CUMULATIVE TIME COUNTERS ---
+    total_ai_time = {"circle": 0.0, "square": 0.0}
+    # --- END NEW ---
 
     current = "circle"
     selected = None
@@ -782,11 +784,6 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
                 winner = None; game_over = True
                 print("Both players timed out. Draw.")
 
-        # if not winner:
-        #     timers[current] -= (now - last); last = now
-        #     if timers[current] <= 0:
-        #         winner = opponent(current); msg = f"{current.title()} timed out. {winner.title()} wins!"
-
         # AI turn (single call)
         if players[current] == "ai" and not winner and not game_over:
             ai_start = time.time()
@@ -794,6 +791,14 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
             move = agent.choose(board, rows, cols, score_cols, timers[current], timers[opponent(current)])
             ai_end = time.time()
             ai_elapsed = ai_end - ai_start
+            
+            # --- MODIFIED: ACCUMULATE AND PRINT TOTAL TIME ---
+            total_ai_time[current] += ai_elapsed
+            
+            print(f"[{current.title()}] Move time: {ai_elapsed:.4f}s. "
+                  f"TOTAL time: {total_ai_time[current]:.4f}s.")
+            # --- END MODIFIED ---
+            
             timers[current] -= ai_elapsed
             if timers[current] <= 0:
                 winner = opponent(current); msg = f"{current.title()} timed out. {winner.title()} wins!"; game_over = True
@@ -806,7 +811,7 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
                         if w: winner = w; msg = f"{w.title()} wins!"; game_over = True
                         current = opponent(current)
                         selected=None; highlights=set(); action_mode=None; push_stage=None; push_candidate=None
-                        turn_start = time.time()  # NEW: reset timer when switching to next (human) turn
+                        turn_start = time.time()
                     else:
                         current = opponent(current)
                         turn_start = time.time()
@@ -815,11 +820,7 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
                     turn_start = time.time()
             draw_board(screen, board, rows, cols, score_cols, selected, highlights, msg, timers, current)
             
-            # --- THIS IS THE FIX ---
-            # This line allows Pygame to process window events (like drawing and
-            # responding) while the AI is thinking, preventing the "not responding" error.
             pygame.event.pump()
-            # ---------------------
 
             turn += 1
             if turn > 1000:
@@ -829,7 +830,7 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 pygame.quit(); return
-            if game_over:  # block further moves
+            if game_over:
                 continue
 
             if ev.type == pygame.KEYDOWN:
@@ -925,7 +926,7 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
                                 current = opponent(current)
                                 selected=None; highlights=set(); action_mode=None
                                 push_stage=None; push_candidate=None
-                                turn_start = time.time()  # NEW: reset for next turn
+                                turn_start = time.time()
 
                     elif action_mode=="push":
                         info = compute_valid_targets(board,sx,sy,current,rows,cols,score_cols)
@@ -959,7 +960,7 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
                                         if w: winner=w; msg=f"{w.title()} wins!"; game_over=True
                                         current = opponent(current)
                                         selected=None
-                                        turn_start = time.time()  # NEW
+                                        turn_start = time.time()
 
                     elif action_mode=="flip":
                         p = board[sy][sx]
@@ -972,7 +973,7 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
                                 if w: winner=w; msg=f"{w.title()} wins!"; game_over=True
                                 current = opponent(current)
                                 selected=None; action_mode=None
-                                turn_start = time.time()  # NEW
+                                turn_start = time.time()
                         else:
                             msg = "Press H/V for stone->river in flip mode"
 
@@ -991,7 +992,7 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
                                 if w: winner=w; msg=f"{w.title()} wins!"; game_over=True
                                 current = opponent(current)
                                 selected=None; highlights=set(); action_mode=None
-                                turn_start = time.time()  # NEW
+                                turn_start = time.time()
                         else:
                             newp = board[ry][rx]
                             if newp and newp.owner==current:
@@ -999,10 +1000,6 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
                                 msg=f"Selected {selected}"
                             else:
                                 msg="Invalid click"
-        # turn += 1
-        # print(turn)
-        # if turn > 1000:
-        #     print("Turn limit reached -> draw"); break
 
         # --- DRAW ---
         draw_board(screen, board, rows, cols, score_cols, selected, highlights, msg, timers, current)
@@ -1012,11 +1009,22 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
                 board, winner, rows, cols, score_cols,
                 remaining_times={'circle': timers['circle'], 'square': timers['square']}
             )
+            
+            # --- MODIFIED: INCLUDE MOVE COUNT IN MESSAGE ---
+            total_moves = turn // 2
+            
             if winner in ("circle","square"):
-                msg = f"{winner.title()} wins! Scores — Circle: {game_scores['circle']:.1f}, Square: {game_scores['square']:.1f}"
+                msg = f"{winner.title()} wins in {total_moves} moves! Scores — Circle: {game_scores['circle']:.1f}, Square: {game_scores['square']:.1f}"
             else:
-                msg = f"Draw. Scores — Circle: {game_scores['circle']:.1f}, Square: {game_scores['square']:.1f}"
-
+                msg = f"Draw in {total_moves} moves. Scores — Circle: {game_scores['circle']:.1f}, Square: {game_scores['square']:.1f}"
+            
+            # Print total cumulative time for AI players at the end
+            if players['circle'] == 'ai':
+                 print(f"[Circle] Final TOTAL AI Time: {total_ai_time['circle']:.4f}s.")
+            if players['square'] == 'ai':
+                 print(f"[Square] Final TOTAL AI Time: {total_ai_time['square']:.4f}s.")
+            # --- END MODIFIED ---
+            
             draw_board(screen, board, rows, cols, score_cols, selected, highlights, msg, timers, current)
 
             # 2. Print the final message to the command line
@@ -1025,8 +1033,8 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
             # 3. If in AI-vs-AI mode, pause to show the result, then exit.
             if mode == "aivai":
                 print("AI vs AI game finished. Exiting GUI in 3 seconds.")
-                pygame.time.wait(3000) # Pause for 3 seconds
-                break # Exit the while True loop
+                pygame.time.wait(3000)
+                break
 
 
 # ---------------- CLI interactive runner ----------------
