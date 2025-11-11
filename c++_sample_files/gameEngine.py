@@ -17,8 +17,14 @@ CELL = 48
 MARGIN = 60
 FPS = 30
 TIME_PER_PLAYER = 1 * 60  # Default 1 minute per player
-WIN_COUNT = 4
+WIN_COUNT = 4 # This default will be overwritten
 
+# NEW: Board Configuration Map
+BOARD_CONFIGS = {
+    "small": {"rows": 13, "cols": 12, "win_count": 4},
+    "medium": {"rows": 15, "cols": 14, "win_count": 5},
+    "large": {"rows": 17, "cols": 16, "win_count": 6}
+}
 # Colors - Light yellow background color scheme
 BG = (255, 253, 240)  # Light yellow background
 BOARD_COLOR = (250, 248, 235)  # Light cream board color
@@ -80,8 +86,10 @@ def save_board_to_file(board, path:str):
         json.dump(data, fh, indent=2)
 
 # ---------------- Score helpers ----------------
-def score_cols_for(cols:int) -> List[int]:
-    w=4
+# ---------------- Score helpers ----------------
+def score_cols_for(cols:int, win_count:int) -> List[int]:
+    """Get the column indices for scoring areas based on dynamic win_count (width)."""
+    w = win_count # Use the win_count (4, 5, or 6) as the width
     start = max(0, (cols - w)//2)
     return list(range(start, start+w))
 
@@ -726,7 +734,8 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
     if not pygame:
         print("pygame not available; use --nogui")
         return
-    score_cols = score_cols_for(cols)
+    # MODIFIED: Pass WIN_COUNT to score_cols_for
+    score_cols = score_cols_for(cols, WIN_COUNT)
     board = default_start_board(rows, cols)
     turn=0
 
@@ -1038,8 +1047,10 @@ def run_gui(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
 
 
 # ---------------- CLI interactive runner ----------------
+# ---------------- CLI interactive runner ----------------
 def run_cli(mode:str, circle_strategy:str, square_strategy:str, load_file:Optional[str], rows:int, cols:int, time_per_player:float):
-    score_cols = score_cols_for(cols)
+    # MODIFIED: Pass WIN_COUNT to score_cols_for
+    score_cols = score_cols_for(cols, WIN_COUNT)
     board = default_start_board(rows, cols)
     agent_circle = get_agent("circle", circle_strategy)
     agent_square = get_agent("square", square_strategy)
@@ -1183,6 +1194,8 @@ def run_cli(mode:str, circle_strategy:str, square_strategy:str, load_file:Option
     print(f"Final Scores -> Circle: {final_scores['circle']:.1f} | Square: {final_scores['square']:.1f}\n")
 
 # ---------------- Entrypoint ----------------
+# ---------------- Entrypoint ----------------
+# ---------------- Entrypoint ----------------
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["hvh","hvai","aivai"], default="hvai")
@@ -1191,9 +1204,22 @@ def main():
     ap.add_argument("--load", default=None)
     ap.add_argument("--nogui", action="store_true")
     ap.add_argument("--time", type=float, default=1.0, help="Time per player in minutes (default: 1.0)")
+    
+    # --- NEW ARGUMENT ADDED HERE ---
+    ap.add_argument("--board-size", choices=list(BOARD_CONFIGS.keys()), default="small",
+                    help="Board size: small (13x12, win 4), medium (15x14, win 5), large (17x16, win 6)")
+    # -------------------------------
+    
     args = ap.parse_args()
 
-    rows = DEFAULT_ROWS; cols = DEFAULT_COLS
+    # --- DYNAMIC BOARD CONFIGURATION ---
+    global WIN_COUNT
+    config = BOARD_CONFIGS[args.board_size]
+    rows = config["rows"]
+    cols = config["cols"]
+    WIN_COUNT = config["win_count"]
+    # -----------------------------------
+    
     time_per_player = args.time * 60  # Convert minutes to seconds
 
     if args.nogui:

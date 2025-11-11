@@ -760,10 +760,24 @@ std::vector<Move> StudentAgent::order_moves_with_edge_control(const Board& board
 // ===================================================================
 
 std::string StudentAgent::get_game_phase(const Board& board, int rows, int cols, const std::vector<int>& score_cols) const {
+    // Dynamic endgame threshold is (Score Area Size - 1).
+    // This is 3 for small (4-space SA), 4 for medium (5-space SA), and 5 for large (6-space SA).
+    size_t required_win_count = score_cols.size();
+    size_t endgame_threshold = (required_win_count > 0) ? required_win_count - 1 : 0; 
+    
     int my_stones = count_stones_in_score_area(board, this->player, rows, cols, score_cols);
     int opp_stones = count_stones_in_score_area(board, this->opponent, rows, cols, score_cols);
-    if (my_stones >= 3 || opp_stones >= 3) return "endgame";
-    if (my_stones + opp_stones >= 2) return "midgame";
+    
+    // Endgame: One stone away from winning for either player
+    if (my_stones >= endgame_threshold || opp_stones >= endgame_threshold) {
+        return "endgame";
+    }
+    
+    // Midgame: At least one stone scored by either player
+    if (my_stones + opp_stones >= 1) { 
+        return "midgame";
+    }
+    
     return "opening";
 }
 int StudentAgent::count_stones_in_score_area(const Board& board, const std::string& player, int rows, int cols, const std::vector<int>& score_cols) const {
