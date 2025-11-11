@@ -295,12 +295,16 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
         return evaluate_balanced(board, current_player, rows, cols, score_cols);
     }
 
-    // --- Win/Loss Check (Terminal Node) ---
+    // --- Dynamic Win/Loss Check (Terminal Node) ---
+    size_t required_win_count = score_cols.size();
+    
     int my_stones = count_stones_in_score_area(board, current_player, rows, cols, score_cols);
     std::string opp = get_opponent(current_player);
     int opp_stones = count_stones_in_score_area(board, opp, rows, cols, score_cols);
-    if (my_stones >= 4) return 10000.0 - (max_depth - depth) * 10.0;
-    if (opp_stones >= 4) return -10000.0 + (max_depth - depth) * 10.0;
+    
+    // DYNAMIC WIN CHECK: >= score_cols.size() (4, 5, or 6)
+    if (my_stones >= required_win_count) return 10000.0 - (max_depth - depth) * 10.0;
+    if (opp_stones >= required_win_count) return -10000.0 + (max_depth - depth) * 10.0;
 
     // --- Quiescence Search ---
     if (depth <= 0) {
@@ -464,13 +468,19 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     int my_scored = count_stones_in_score_area(board, current_player, rows, cols, score_cols);
     int opp_scored = count_stones_in_score_area(board, opp, rows, cols, score_cols);
     
+    // --- Dynamic Win/Loss Terminals and Near-Win Bonuses ---
+    size_t required_win_count = score_cols.size();
+    
     // Win/Loss Terminals
     score += my_scored * 1000.0; 
     score -= opp_scored * 1100.0;
-    if (my_scored >= 4) return 10000.0; 
-    if (opp_scored >= 4) return -10000.0;
-    if (my_scored == 3) score += 500.0; 
-    if (opp_scored == 3) score -= 600.0;
+    
+    if (my_scored >= required_win_count) return 10000.0; 
+    if (opp_scored >= required_win_count) return -10000.0;
+    
+    // Near-Win Bonuses
+    if (my_scored == required_win_count - 1) score += 500.0; 
+    if (opp_scored == required_win_count - 1) score -= 600.0;
 
     // Weighted Feature Sum
     score += evaluate_edge_control(board, current_player, rows, cols, score_cols) * edge_control_weight;
@@ -768,11 +778,18 @@ int StudentAgent::count_stones_in_score_area(const Board& board, const std::stri
 }
 bool StudentAgent::is_winning_move(const Board& board, const Move& move, const std::string& player, int rows, int cols, const std::vector<int>& score_cols) {
     if (move.action != Move::ActionType::MOVE && move.action != Move::ActionType::PUSH) return false;
+    
+    // Determine the required win count based on the Score Area size
+    size_t required_win_count = score_cols.size(); 
+
+    // Temporarily apply the move
     Board temp_board = deep_copy_board(board);
     uint64_t dummy_hash = 0;
     Board& board_ref = temp_board;
     apply_move_inplace(board_ref, move, rows, cols, dummy_hash);
-    return count_stones_in_score_area(temp_board, player, rows, cols, score_cols) >= 4;
+    
+    // Check if the resulting state meets the required win condition
+    return count_stones_in_score_area(temp_board, player, rows, cols, score_cols) >= required_win_count;
 }
 std::optional<Move> StudentAgent::find_blocking_move(const Board& board, const std::vector<Move>& my_moves, const Move& opp_winning_move, int rows, int cols, const std::vector<int>& score_cols) {
     std::pair<int, int> target_pos = {-1, -1};
