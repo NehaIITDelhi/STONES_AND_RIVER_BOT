@@ -11,6 +11,7 @@ except Exception:
     pygame = None
 
 # ---------------- Config ----------------
+# ---------------- Config ----------------
 DEFAULT_ROWS = 13
 DEFAULT_COLS = 12
 CELL = 48
@@ -18,13 +19,17 @@ MARGIN = 60
 FPS = 30
 TIME_PER_PLAYER = 1 * 60  # Default 1 minute per player
 WIN_COUNT = 4 # This default will be overwritten
+W = 10.0 # Reward for placing a stone (default)
+N_TOTAL = 12 # Total pieces per player (default)
 
-# NEW: Board Configuration Map
+# NEW: Board Configuration Map (Updated)
 BOARD_CONFIGS = {
-    "small": {"rows": 13, "cols": 12, "win_count": 4},
-    "medium": {"rows": 15, "cols": 14, "win_count": 5},
-    "large": {"rows": 17, "cols": 16, "win_count": 6}
+    "small": {"rows": 13, "cols": 12, "win_count": 4, "W": 10.0, "n_total": 12},
+    "medium": {"rows": 15, "cols": 14, "win_count": 5, "W": 8.0, "n_total": 14},
+    "large": {"rows": 17, "cols": 16, "win_count": 6, "W": 6.5, "n_total": 16}
 }
+# Colors - Light yellow background color scheme
+# ... (rest of the colors)
 # Colors - Light yellow background color scheme
 BG = (255, 253, 240)  # Light yellow background
 BOARD_COLOR = (250, 248, 235)  # Light cream board color
@@ -155,13 +160,11 @@ def compute_final_scores(board:List[List[Optional[Piece]]],
     """
     Return dict {'circle':score, 'square':score}.
     winner may be 'circle', 'square', or None (draw).
-    If remaining_times provided (dict with keys 'circle' and 'square' containing remaining time),
-    then if one player's clock is <= 0 and the other player's clock > 0 the latter is declared winner.
-    Implements the scoring rules from the spec:
-      - Victory: winner gets 100 - (n_lose + m_lose/10), loser gets (n_lose + m_lose/10)
-      - Draw: each player gets DrawScore (30) + MarginScore/4
-        where MarginScore = 39 + ((n_self + m_self/10) - (n_opp + m_opp/10))
+    Implements the scoring rules from the spec (Victory: 2.2, Draw: 2.3)
     """
+    # Global variables for score calculation, set in main()
+    global W, N_TOTAL, WIN_COUNT 
+    
     # If a remaining_times dict is passed and no winner was set, derive winner from clocks
     if remaining_times is not None and winner is None:
         c_time = remaining_times.get('circle', None)
@@ -183,21 +186,32 @@ def compute_final_scores(board:List[List[Optional[Piece]]],
     if winner in ("circle", "square"):
         loser = opponent(winner)
         n_loser, m_loser = nm_for(loser)
-        loser_score = float(n_loser) + float(m_loser) / 10.0
+        
+        # CORRECT VICTORY FORMULA (2.2)
+        # Loser Score = W * (n_Lose + m_Lose / n_total)
+        loser_term = float(n_loser) + float(m_loser) / N_TOTAL
+        loser_score = W * loser_term
+
+        # Winner Score = 100 - Loser Score
         winner_score = 100.0 - loser_score
         scores[winner] = winner_score
         scores[loser] = loser_score
     else:
-        # draw
+        # DRAW FORMULA (2.3) - Assumes draw logic is correct (which it is)
         DRAW_SCORE = 30.0
         for player in ("circle", "square"):
             n_self, m_self = nm_for(player)
             n_opp, m_opp = nm_for(opponent(player))
-            margin = 39.0 + ((float(n_self) + float(m_self)/10.0) - (float(n_opp) + float(m_opp)/10.0))
+            
+            # Margin Score = 39 + ((n_self + m_self/n_total) - (n_opp + m_opp/n_total))
+            self_term = (float(n_self) + float(m_self) / N_TOTAL)
+            opp_term = (float(n_opp) + float(m_opp) / N_TOTAL)
+            margin = 39.0 + (self_term - opp_term)
+            
+            # Total Score = Draw Score + Margin Score / 4
             total = DRAW_SCORE + margin / 4.0
             scores[player] = total
     return scores
-
 
 def in_bounds(x:int,y:int,rows:int,cols:int) -> bool:
     return 0 <= x < cols and 0 <= y < rows
@@ -1213,11 +1227,13 @@ def main():
     args = ap.parse_args()
 
     # --- DYNAMIC BOARD CONFIGURATION ---
-    global WIN_COUNT
+    global WIN_COUNT, W, N_TOTAL
     config = BOARD_CONFIGS[args.board_size]
     rows = config["rows"]
     cols = config["cols"]
     WIN_COUNT = config["win_count"]
+    W = config["W"]
+    N_TOTAL = config["n_total"]
     # -----------------------------------
     
     time_per_player = args.time * 60  # Convert minutes to seconds
