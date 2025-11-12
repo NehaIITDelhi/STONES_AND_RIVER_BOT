@@ -82,8 +82,10 @@ class StudentAgent : public BaseAgent {
 private:
     std::map<int, std::vector<Move>> killer_moves;
     
-    static std::deque<size_t> recent_positions;
+    // --- MODIFIED: Storing Zobrist hashes ---
+    static std::deque<uint64_t> recent_positions;
     static const int MAX_HISTORY_SIZE = 20;
+    // --- END MODIFIED ---
 
     std::deque<Move> last_moves;
     const int MAX_RECENT_MOVES = 5;
@@ -109,10 +111,10 @@ private:
     int top_score_row() const;
     int bottom_score_row(int rows) const;
     bool is_opponent_score_cell(int x, int y, const std::string& p, int rows, int cols, const std::vector<int>& score_cols) const;
+    // Add this line in the private section of StudentAgent class
+int count_offensive_pieces(const Board& board, const std::string& player, int rows, int cols) const;
     bool is_own_score_cell(int x, int y, const std::string& p, int rows, int cols, const std::vector<int>& score_cols) const;
-    
-    size_t board_hash(const Board& board) const; // Baseline uses the slow hash
-    
+    // size_t board_hash(const Board& board) const; // <-- REMOVED slow hash
     int manhattan_distance(int x1, int y1, int x2, int y2) const;
     Board deep_copy_board(const Board& board);
 
@@ -124,6 +126,10 @@ private:
                                 const std::string& current_player, int rows, int cols, 
                                 const std::vector<int>& score_cols, int max_depth, 
                                 uint64_t& zobrist_hash);
+    
+    double quiescence_search(Board& board, double alpha, double beta,
+                             const std::string& current_player, int rows, int cols,
+                             const std::vector<int>& score_cols, uint64_t& zobrist_hash, int q_depth);
 
     // --- Evaluation ---
     double evaluate_balanced(const Board& board, const std::string& current_player, int rows, int cols, const std::vector<int>& score_cols);

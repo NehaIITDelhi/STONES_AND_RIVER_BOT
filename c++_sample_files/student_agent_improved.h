@@ -111,6 +111,8 @@ private:
     int top_score_row() const;
     int bottom_score_row(int rows) const;
     bool is_opponent_score_cell(int x, int y, const std::string& p, int rows, int cols, const std::vector<int>& score_cols) const;
+    // Add this line in the private section of StudentAgent class
+int count_offensive_pieces(const Board& board, const std::string& player, int rows, int cols) const;
     bool is_own_score_cell(int x, int y, const std::string& p, int rows, int cols, const std::vector<int>& score_cols) const;
     // size_t board_hash(const Board& board) const; // <-- REMOVED slow hash
     int manhattan_distance(int x1, int y1, int x2, int y2) const;
