@@ -283,6 +283,7 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
     double original_alpha = alpha;
     
     // --- Transposition Table Lookup ---
+    // (Note: If you upgrade to std::vector or array later, this becomes much faster)
     if (auto it = transposition_table.find(zobrist_hash); it != transposition_table.end()) {
         TTEntry& entry = it->second;
         if (entry.depth >= depth) {
@@ -293,82 +294,92 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
         }
     }
 
+    // --- Time Check ---
     auto now = std::chrono::high_resolution_clock::now();
     double time_spent = std::chrono::duration<double>(now - start_time_point).count();
     if (time_spent > time_limit_seconds) {
         return evaluate_balanced(board, current_player, rows, cols, score_cols);
     }
 
-    // --- Dynamic Win/Loss Check (Terminal Node) ---
+    // --- Terminal Checks ---
     size_t required_win_count = score_cols.size();
-    
     int my_stones = count_stones_in_score_area(board, current_player, rows, cols, score_cols);
     std::string opp = get_opponent(current_player);
     int opp_stones = count_stones_in_score_area(board, opp, rows, cols, score_cols);
     
-    // DYNAMIC WIN CHECK: >= score_cols.size() (4, 5, or 6)
-    if (my_stones >= required_win_count) return 10000.0 - (max_depth - depth) * 10.0;
-    if (opp_stones >= required_win_count) return -10000.0 + (max_depth - depth) * 10.0;
+    if (my_stones >= required_win_count) return 100000.0 - (max_depth - depth) * 100.0; // Prefer winning sooner
+    if (opp_stones >= required_win_count) return -100000.0 + (max_depth - depth) * 100.0; // Prefer losing later
 
-    // --- Quiescence Search ---
+    // --- Quiescence Search at Leaf ---
     if (depth <= 0) {
-        return quiescence_search(board, alpha, beta, current_player, rows, cols, score_cols, zobrist_hash, 2); // Max q-depth of 2
+        return quiescence_search(board, alpha, beta, current_player, rows, cols, score_cols, zobrist_hash, 2);
     }
 
     auto moves = get_all_valid_moves_enhanced(board, current_player, rows, cols, score_cols);
     if (moves.empty()) {
-        return evaluate_balanced(board, current_player, rows, cols, score_cols);
+        return evaluate_balanced(board, current_player, rows, cols, score_cols); // No moves = just eval
     }
     
     moves = order_moves_with_edge_control(board, moves, current_player, rows, cols, score_cols);
 
-    int max_moves = (depth <= 1) ? 4 : 6;
-    if (moves.size() > max_moves) moves.resize(max_moves);
+    // Pruning: Only search the top X moves to save time on deep branches
+    int moves_to_search = moves.size();
+    if (depth <= 1) moves_to_search = std::min((int)moves.size(), 5); // Very aggressive pruning at leaves
+    else if (depth <= 3) moves_to_search = std::min((int)moves.size(), 10);
+    
+    if (moves.size() > moves_to_search) moves.resize(moves_to_search);
 
     double best_score = -std::numeric_limits<double>::infinity();
 
-    for (const auto& move : moves) {
-        UndoInfo undo_data = apply_move_inplace(board, move, rows, cols, zobrist_hash);
+    for (int i = 0; i < moves.size(); ++i) {
+        UndoInfo undo_data = apply_move_inplace(board, moves[i], rows, cols, zobrist_hash);
+        
+        // --- History Redundancy Check ---
+        bool found_in_history = false;
+        if (recent_positions.size() >= 2 && zobrist_hash == recent_positions[recent_positions.size() - 2]) {
+            found_in_history = true; // Immediate repetition
+        }
         
         double score;
         
-        // --- NEW: REPETITION PENALTY LOGIC (Using Zobrist) ---
-        bool found_in_history = false;
-        
-        // Check for immediate 2-ply repetition (A->B->A)
-        if (recent_positions.size() >= 2 && zobrist_hash == recent_positions[recent_positions.size() - 2]) {
-            score = -9999; // Heavy penalty
-            found_in_history = true;
+        if (found_in_history) {
+            score = -9000.0; // Penalize repetition
         } else {
-            // Check if it's any other recent position
-            for (const uint64_t& hash : recent_positions) { // <-- Use Zobrist hash type
-                if (zobrist_hash == hash) {
-                    score = -5000; // Milder penalty
-                    found_in_history = true;
-                    break;
+            // --- PRINCIPAL VARIATION SEARCH (PVS) ---
+            if (i == 0) {
+                // Full search for the first move (assumed best)
+                score = -negamax_with_balance(board, depth - 1, -beta, -alpha,
+                                              opp, rows, cols, score_cols, max_depth, zobrist_hash);
+            } else {
+                // Null Window Search: Check if this move is worse than alpha
+                // We search with a closed window (-alpha-1, -alpha)
+                score = -negamax_with_balance(board, depth - 1, -alpha - 1, -alpha,
+                                              opp, rows, cols, score_cols, max_depth, zobrist_hash);
+                
+                // If this move is actually better than alpha, we messed up assuming it was bad.
+                // We must re-search with the full window to get the exact score.
+                if (score > alpha && score < beta) {
+                    score = -negamax_with_balance(board, depth - 1, -beta, -alpha,
+                                                  opp, rows, cols, score_cols, max_depth, zobrist_hash);
                 }
             }
         }
         
-        if (!found_in_history) {
-            // Not a loop, proceed with normal search
-            score = -negamax_with_balance(board, depth - 1, -beta, -alpha,
-                                          opp, rows, cols, score_cols, max_depth, zobrist_hash);
-        }
-        // --- END NEW ---
-        
-        unapply_move(board, move, undo_data, rows, cols, zobrist_hash);
+        unapply_move(board, moves[i], undo_data, rows, cols, zobrist_hash);
 
         if (score > best_score) best_score = score;
         if (score > alpha) alpha = score;
         if (alpha >= beta) {
+            // Killer Move Heuristic Update
             if (killer_moves.find(depth) == killer_moves.end()) killer_moves[depth] = {};
             auto& killers = killer_moves[depth];
-            if (std::find(killers.begin(), killers.end(), move) == killers.end()) {
-                killers.insert(killers.begin(), move);
+            bool present = false;
+            for(const auto& k : killers) if(k == moves[i]) { present = true; break; }
+            if (!present) {
+                killers.insert(killers.begin(), moves[i]);
                 if (killers.size() > 2) killers.pop_back();
             }
-            break;
+            break; // Beta Cutoff
         }
     }
 
