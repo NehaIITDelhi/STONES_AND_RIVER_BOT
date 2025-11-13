@@ -112,10 +112,6 @@ Board StudentAgent::deep_copy_board(const Board& board) {
 // MODIFIED: MAIN SEARCH FUNCTION
 // ===================================================================
 
-// ===================================================================
-// MODIFIED: MAIN SEARCH FUNCTION (WITH ASPIRATION WINDOWS)
-// ===================================================================
-
 std::optional<Move> StudentAgent::choose(
     const Board& board, int rows, int cols, const std::vector<int>& score_cols,
     double current_player_time, double opponent_time) 
@@ -126,15 +122,13 @@ std::optional<Move> StudentAgent::choose(
 
     uint64_t current_zobrist_hash = board_hash_zobrist(board, rows, cols);
 
-    // --- SHARED HISTORY LOGIC (Unchanged) ---
+    // --- HISTORY LOGIC ---
     auto is_starting_board = [&](const Board& b) {
         if (this->player != "circle") return false;
         int piece_count = 0;
-        for (int r = 0; r < rows; ++r) {
-            for (int c = 0; c < cols; ++c) {
+        for (int r = 0; r < rows; ++r) 
+            for (int c = 0; c < cols; ++c) 
                 if (b[r][c]) piece_count++;
-            }
-        }
         return (piece_count == 24 || piece_count == 28 || piece_count == 32);
     };
 
@@ -146,25 +140,35 @@ std::optional<Move> StudentAgent::choose(
     if (recent_positions.size() > MAX_HISTORY_SIZE) {
         recent_positions.pop_front();
     }
-    // --- END SHARED HISTORY ---
 
-    // --- AGGRESSIVE ADAPTIVE TIME MANAGEMENT (Unchanged) ---
-    if (current_player_time > 45.0) time_limit_seconds = 2.0; 
-    else if (current_player_time > 25.0) time_limit_seconds = 1.2;
-    else if (current_player_time > 10.0) time_limit_seconds = 0.8; 
-    else time_limit_seconds = std::max(0.1, current_player_time / 15.0); 
-    // --- END MODIFIED TIME ---
+    // --- FIXED TIME MANAGEMENT ---
+    // Use a percentage of remaining time, clamped to safe limits.
+    double time_fraction;
+    if (current_player_time > 60.0) time_fraction = 0.04;      // Early game: 4% (approx 2.4s - 4.0s)
+    else if (current_player_time > 10.0) time_fraction = 0.06; // Mid game: 6% (approx 0.6s - 3.6s)
+    else time_fraction = 0.10;                                 // Endgame panic: 10% (approx 0.1s - 1.0s)
+
+    time_limit_seconds = current_player_time * time_fraction;
+    
+    // Safety Clamps:
+    // Never take more than 2.5 seconds (save buffer).
+    // Never take less than 0.2 seconds (unless literally out of time).
+    time_limit_seconds = std::min(time_limit_seconds, 2.5);
+    if (current_player_time > 1.0) {
+        time_limit_seconds = std::max(0.2, time_limit_seconds);
+    }
 
     auto moves = get_all_valid_moves_enhanced(board, this->player, rows, cols, score_cols);
     if (moves.empty()) return std::nullopt;
 
-    // (Immediate win/threat checks remain the same)
+    // Immediate win check
     for (const auto& move : moves) {
         if (is_winning_move(board, move, this->player, rows, cols, score_cols)) {
             update_move_history(move); return move;
         }
     }
 
+    // Immediate loss prevention
     auto opp_moves = get_all_valid_moves_enhanced(board, this->opponent, rows, cols, score_cols);
     for (const auto& opp_move : opp_moves) {
         if (is_winning_move(board, opp_move, this->opponent, rows, cols, score_cols)) {
@@ -179,136 +183,81 @@ std::optional<Move> StudentAgent::choose(
     int max_depth;
     if (current_player_time < 5) max_depth = 1;
     else if (current_player_time < 15) max_depth = 2;
-    else if (game_phase == "endgame") max_depth = 4;
+    else if (game_phase == "endgame") max_depth = 5; // Deeper search in endgame
     else if (game_phase == "midgame") max_depth = 3;
-    else max_depth = 2;
+    else max_depth = 3;
 
     moves = order_moves_with_edge_control(board, moves, this->player, rows, cols, score_cols);
 
-    // --- MODIFIED: WIDER SEARCH AT ROOT FOR AMPLE TIME (Unchanged) ---
-    int max_moves;
-    if (current_player_time > 20) max_moves = 15;
-    else max_moves = 8;
-    if (moves.size() > max_moves) moves.resize(max_moves);
-    // --- END MODIFIED MOVE COUNT ---
+    // Adaptive move widening
+    int max_moves_to_search;
+    if (current_player_time > 30) max_moves_to_search = 12;
+    else max_moves_to_search = 8;
+    
+    if (moves.size() > max_moves_to_search) moves.resize(max_moves_to_search);
 
     Board board_copy = deep_copy_board(board);
-    
     Move best_move = moves[0];
     double best_score = -std::numeric_limits<double>::infinity();
-    double old_best_score = 0.0; // Initial guess for Aspiration Window
 
+    // Iterative Deepening
     for (int depth = 1; depth <= max_depth; ++depth) {
         auto now = std::chrono::high_resolution_clock::now();
         double time_spent = std::chrono::duration<double>(now - start_time_point).count();
-        if (time_spent > time_limit_seconds * 0.85) break;
+        if (time_spent > time_limit_seconds * 0.60) break; // Stop earlier to be safe
 
-        // --- ASPIRATION WINDOW LOGIC ---
-        double window_margin = 200.0;
-        double alpha = old_best_score - window_margin;
-        double beta = old_best_score + window_margin;
-        
-        // Ensure initial alpha/beta are sensible (don't prune wins/losses)
-        alpha = std::max(alpha, -std::numeric_limits<double>::infinity() + 1000.0);
-        beta = std::min(beta, std::numeric_limits<double>::infinity() - 1000.0);
-        // --- END ASPIRATION WINDOW LOGIC ---
-
-        Move current_best = moves[0];
+        double alpha = -std::numeric_limits<double>::infinity();
+        double beta = std::numeric_limits<double>::infinity();
+        Move current_best;
         double current_best_score = -std::numeric_limits<double>::infinity();
 
-        // --- LOOP WITH POSSIBLE RETRIES IF WINDOW FAILS ---
-        bool search_success = false;
-        int retries = 0;
-        
-        while (!search_success && retries < 2) {
-            // If the window is too narrow, open it up for the retry
-            if (retries > 0) {
-                alpha = -std::numeric_limits<double>::infinity();
-                beta = std::numeric_limits<double>::infinity();
-            }
+        for (int i = 0; i < moves.size(); ++i) {
+            // Time Check
+            now = std::chrono::high_resolution_clock::now();
+            time_spent = std::chrono::duration<double>(now - start_time_point).count();
+            if (time_spent > time_limit_seconds) break;
+
+            UndoInfo undo_data = apply_move_inplace(board_copy, moves[i], rows, cols, current_zobrist_hash);
             
-            current_best_score = -std::numeric_limits<double>::infinity();
-
-            for (int i = 0; i < moves.size(); ++i) {
-                
-                // --- CRITICAL TIME CHECK FOR ITERATIVE DEEPENING ---
-                now = std::chrono::high_resolution_clock::now();
-                time_spent = std::chrono::duration<double>(now - start_time_point).count();
-                if (time_spent > time_limit_seconds) goto time_limit_exceeded;
-                // --- END TIME CHECK ---
-
-                UndoInfo undo_data = apply_move_inplace(board_copy, moves[i], rows, cols, current_zobrist_hash);
-                
-                double score;
-                
-                // Use a tighter window for the first move if it's the PV move from previous depth
-                if (i == 0) {
-                    score = -negamax_with_balance(board_copy, depth - 1, -beta, -alpha, 
-                                                   this->opponent, rows, cols, score_cols, depth, current_zobrist_hash);
-                } else {
-                    // Search with a narrow window (PVS)
-                    score = -negamax_with_balance(board_copy, depth - 1, -alpha - 1, -alpha,
-                                                  this->opponent, rows, cols, score_cols, depth, current_zobrist_hash);
-                    
-                    // If it was a 'pv' line, re-search with full window
-                    if (score > alpha && score < beta) {
-                        score = -negamax_with_balance(board_copy, depth - 1, -beta, -score,
-                                                      this->opponent, rows, cols, score_cols, depth, current_zobrist_hash);
-                    }
-                }
-
-                unapply_move(board_copy, moves[i], undo_data, rows, cols, current_zobrist_hash);
-
-                if (score > current_best_score) {
-                    current_best_score = score;
-                    current_best = moves[i];
-                }
-                
-                alpha = std::max(alpha, score);
-                if (alpha >= beta) break;
-            } // end move loop
-
-            // Aspiration Window failure check
-            if (current_best_score <= old_best_score - window_margin && retries == 0) {
-                // Fail-low: Re-search with full alpha/beta
-                retries++;
-            } else if (current_best_score >= old_best_score + window_margin && retries == 0) {
-                // Fail-high: Re-search with full alpha/beta
-                retries++;
+            double score;
+            if (i == 0) {
+                 score = -negamax_with_balance(board_copy, depth - 1, -beta, -alpha, 
+                                               this->opponent, rows, cols, score_cols, depth, current_zobrist_hash);
             } else {
-                // Success: Break the retry loop
-                search_success = true;
+                score = -negamax_with_balance(board_copy, depth - 1, -alpha - 1, -alpha,
+                                              this->opponent, rows, cols, score_cols, depth, current_zobrist_hash);
+                if (alpha < score && score < beta) {
+                    score = -negamax_with_balance(board_copy, depth - 1, -beta, -score,
+                                                  this->opponent, rows, cols, score_cols, depth, current_zobrist_hash);
+                }
             }
-        } // end retry loop
 
-        // If the current depth found a better result, update the overall best move
-        if (current_best_score > best_score) {
-             best_score = current_best_score;
-             best_move = current_best;
-             
-             // Promote the best move to the front for the next depth
-             auto it = std::find(moves.begin(), moves.end(), best_move);
-             if (it != moves.end()) {
-                 moves.erase(it);
-                 moves.insert(moves.begin(), best_move);
-             }
+            unapply_move(board_copy, moves[i], undo_data, rows, cols, current_zobrist_hash);
+
+            if (score > current_best_score) {
+                current_best_score = score;
+                current_best = moves[i];
+            }
+            alpha = std::max(alpha, score);
         }
         
-        // Update the guess for the next depth's aspiration window
-        old_best_score = best_score; 
-    }
-    
-time_limit_exceeded:;
-    
-    if (best_score < -9000 && !moves.empty()) {
-        std::shuffle(moves.begin(), moves.end(), random_engine);
-        best_move = moves[0];
+        // Only update best_move if we completed the search or found a vastly superior move
+        if (current_best_score > -90000) { // Filter out panic failures
+            best_move = current_best;
+            best_score = current_best_score;
+            
+            // Reorder moves so best is first for next depth
+            auto it = std::find(moves.begin(), moves.end(), best_move);
+            if (it != moves.end()) {
+                moves.erase(it);
+                moves.insert(moves.begin(), best_move);
+            }
+        }
     }
 
     update_move_history(best_move);
     return best_move;
 }
-
 void StudentAgent::update_move_history(const Move& move) {
     last_moves.push_back(move);
     if (last_moves.size() > MAX_RECENT_MOVES) last_moves.pop_front();
@@ -436,15 +385,10 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
 // QUIESCENCE SEARCH (Unchanged)
 // ===================================================================
 
-// ===================================================================
-// MODIFIED: QUIESCENCE SEARCH (WIDER FORCING MOVES)
-// ===================================================================
-
 double StudentAgent::quiescence_search(Board& board, double alpha, double beta,
                                        const std::string& current_player, int rows, int cols,
                                        const std::vector<int>& score_cols, uint64_t& zobrist_hash, int q_depth) 
 {
-    // --- Transposition Table Lookup (Unchanged) ---
     if (auto it = transposition_table.find(zobrist_hash); it != transposition_table.end()) {
         TTEntry& entry = it->second;
         if (entry.flag == TTFlag::EXACT) return entry.score;
@@ -453,7 +397,6 @@ double StudentAgent::quiescence_search(Board& board, double alpha, double beta,
         if (alpha >= beta) return entry.score;
     }
     
-    // --- Time Check and Stand-Pat (Unchanged) ---
     auto now = std::chrono::high_resolution_clock::now();
     double time_spent = std::chrono::duration<double>(now - start_time_point).count();
     if (time_spent > time_limit_seconds) {
@@ -470,64 +413,24 @@ double StudentAgent::quiescence_search(Board& board, double alpha, double beta,
     }
     alpha = std::max(alpha, best_score);
     
-    // --- MODIFIED: FILTERING FORCING MOVES ---
     auto all_moves = get_all_valid_moves_enhanced(board, current_player, rows, cols, score_cols);
     std::vector<Move> forcing_moves;
-    
-    // Define opponent's scoring row and defense row (one step back)
-    std::string opp = get_opponent(current_player);
-    int opp_sa_row = (opp == "circle") ? top_score_row() : bottom_score_row(rows);
-    int opp_defense_row = (opp == "circle") ? opp_sa_row + 1 : opp_sa_row - 1;
-    
     for (const auto& move : all_moves) {
-        
-        bool is_high_priority = (get_move_priority(board, move, current_player, rows, cols, score_cols) > 1500);
-
-        // 1. All moves that lead to a score or winning threat (covered by get_move_priority > 1500)
-        if (is_high_priority) {
+        if (get_move_priority(board, move, current_player, rows, cols, score_cols) > 1500) {
             forcing_moves.push_back(move);
-            continue;
-        }
-
-        // 2. All PUSH moves (especially defensive ones)
-        if (move.action == Move::ActionType::PUSH) {
-            forcing_moves.push_back(move);
-            continue;
-        }
-        
-        // 3. Moves that enter the opponent's immediate defense zone
-        if (move.action == Move::ActionType::MOVE && move.to.second != -1) {
-            int target_row = move.to.second;
-            
-            // Check if moving into the row directly in front of opponent's SA
-            if (target_row == opp_defense_row) {
-                 forcing_moves.push_back(move);
-                 continue;
-            }
         }
     }
-    
-    // Use the move ordering from Negamax to sort the $Q$-moves
-    std::sort(forcing_moves.begin(), forcing_moves.end(), [&](const Move& a, const Move& b) {
-        return get_move_priority(board, a, current_player, rows, cols, score_cols) > 
-               get_move_priority(board, b, current_player, rows, cols, score_cols);
-    });
-    
-    // Filter the Q-moves (optional but helpful if too many)
-    if (forcing_moves.size() > 10) forcing_moves.resize(10);
     
     if (forcing_moves.empty()) {
         return best_score;
     }
-    // --- END MODIFIED FILTERING ---
-
-    // --- Search Loop (Unchanged) ---
+    
     for (const auto& move : forcing_moves) {
         UndoInfo undo_data = apply_move_inplace(board, move, rows, cols, zobrist_hash);
         
-        std::string opp_player = get_opponent(current_player);
+        std::string opp = get_opponent(current_player);
         double score = -quiescence_search(board, -beta, -alpha,
-                                          opp_player, rows, cols, score_cols, zobrist_hash, q_depth - 1);
+                                          opp, rows, cols, score_cols, zobrist_hash, q_depth - 1);
         
         unapply_move(board, move, undo_data, rows, cols, zobrist_hash);
 
@@ -536,9 +439,9 @@ double StudentAgent::quiescence_search(Board& board, double alpha, double beta,
         if (alpha >= beta) break;
     }
     
-    // --- Transposition Table Store (Unchanged) ---
     return best_score;
 }
+
 
 // ===================================================================
 // PHASE-AWARE EVALUATION (Unchanged)
@@ -549,22 +452,26 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     std::string opp = get_opponent(current_player);
     double score = 0.0;
     
-    // Determine scoring rows
+    // ---------------------------------------------------------
+    // 1. CRITICAL SCORING & DEFENSE (The "Must Win" Logic)
+    // ---------------------------------------------------------
     int my_sa_row = (current_player == "circle") ? top_score_row() : bottom_score_row(rows);
     int opp_sa_row = (opp == "circle") ? top_score_row() : bottom_score_row(rows);
     
-    // Count stones in scoring area BY DEPTH
-    int my_deep_stones = 0;
-    int my_shallow_stones = 0;
+    int my_deep_stones = 0;    
+    int my_shallow_stones = 0; 
     int opp_deep_stones = 0;
     int opp_shallow_stones = 0;
     
+    // Analyze Score Areas
     for (int col : score_cols) {
+        // Check My Score Area
         if (in_bounds(col, my_sa_row, rows, cols)) {
             auto piece = board[my_sa_row][col];
             if (piece && piece->owner == current_player && piece->side == "stone") {
+                // Deep rows are safer/harder to push out
                 if (current_player == "circle") {
-                    if (my_sa_row <= 2) my_deep_stones++;
+                    if (my_sa_row == 2 || my_sa_row == 1) my_deep_stones++;
                     else my_shallow_stones++;
                 } else {
                     if (my_sa_row >= rows - 3) my_deep_stones++;
@@ -573,11 +480,12 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
             }
         }
         
+        // Check Opponent Score Area
         if (in_bounds(col, opp_sa_row, rows, cols)) {
             auto piece = board[opp_sa_row][col];
             if (piece && piece->owner == opp && piece->side == "stone") {
                 if (opp == "circle") {
-                    if (opp_sa_row <= 2) opp_deep_stones++;
+                    if (opp_sa_row == 2 || opp_sa_row == 1) opp_deep_stones++;
                     else opp_shallow_stones++;
                 } else {
                     if (opp_sa_row >= rows - 3) opp_deep_stones++;
@@ -587,41 +495,49 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
         }
     }
     
-    // STRATEGY: Reward deep placement heavily
-    score += my_deep_stones * 300.0;
-    score += my_shallow_stones * 150.0;
-    score -= opp_deep_stones * 350.0;
-    score -= opp_shallow_stones * 180.0;
+    // AGGRESSIVE SCORING WEIGHTS
+    score += my_deep_stones * 10000.0;      // Massive reward for securing deep spots
+    score += my_shallow_stones * 5000.0;    // High reward for just getting in
     
-    // WIN/LOSS TERMINALS
-    int required_stones = score_cols.size();
-    int my_total_in_sa = my_deep_stones + my_shallow_stones;
-    int opp_total_in_sa = opp_deep_stones + opp_shallow_stones;
+    // PARANOID DEFENSE
+    score -= opp_deep_stones * 15000.0;     // Panic: Must block deep threats
+    score -= opp_shallow_stones * 7000.0;   // Panic: Must push them out
     
-    if (my_total_in_sa >= required_stones) return 100000.0;
-    if (opp_total_in_sa >= required_stones) return -100000.0;
+    // WIN/LOSS TERMINAL CHECKS
+    size_t required_stones = score_cols.size();
+    int my_total_score = my_deep_stones + my_shallow_stones;
+    int opp_total_score = opp_deep_stones + opp_shallow_stones;
     
-    // NEAR-WIN BONUSES
-    if (my_total_in_sa >= required_stones - 1) score += 500.0;
-    if (opp_total_in_sa >= required_stones - 1) score -= 600.0;
+    if (my_total_score >= required_stones) return 1000000.0;
+    if (opp_total_score >= required_stones) return -1000000.0;
     
-    // Count pieces ready to move INTO deep SA positions
+    // NEAR-WIN BONUSES (1 stone away)
+    if (my_total_score >= required_stones - 1) score += 2000.0;
+    if (opp_total_score >= required_stones - 1) score -= 3000.0;
+    
+    // ---------------------------------------------------------
+    // 2. DRAFTING (Stones ready to step into Deep SA)
+    // ---------------------------------------------------------
     int my_pieces_ready_for_deep = 0;
-    std::vector<int> target_deep_rows;
+    int target_deep_rows[2];
     if (current_player == "circle") {
-        target_deep_rows = {1, 2};
+        target_deep_rows[0] = 1; target_deep_rows[1] = 2;
     } else {
-        target_deep_rows = {rows - 2, rows - 3};
+        target_deep_rows[0] = rows - 2; target_deep_rows[1] = rows - 3;
     }
     
     for (int deep_row : target_deep_rows) {
+        // Look at the row directly in front of the deep slot
         int check_row = (current_player == "circle") ? deep_row + 1 : deep_row - 1;
+        
         if (check_row >= 0 && check_row < rows) {
             for (int col : score_cols) {
                 if (in_bounds(col, check_row, rows, cols)) {
                     auto piece = board[check_row][col];
+                    // If I have a stone waiting there...
                     if (piece && piece->owner == current_player && piece->side == "stone") {
-                        if (!board[deep_row][col]) {
+                        // ...and the deep spot is empty
+                        if (!board[deep_row][col]) { 
                             my_pieces_ready_for_deep++;
                         }
                     }
@@ -629,171 +545,71 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
             }
         }
     }
+    score += my_pieces_ready_for_deep * 800.0; 
+
+    // ---------------------------------------------------------
+    // 3. AGGRESSIVE RIVER HIGHWAYS ("LOADED GUN" LOGIC)
+    // ---------------------------------------------------------
+    double river_structure_score = 0.0;
     
-    score += my_pieces_ready_for_deep * 120.0;
-    
-    // NEW: REWARD "GATE KEEPERS" - pieces blocking sides of opponent SA
-    int min_score_col = *std::min_element(score_cols.begin(), score_cols.end());
-    int max_score_col = *std::max_element(score_cols.begin(), score_cols.end());
-    
-    std::vector<int> gate_keeper_cols = {min_score_col - 1, max_score_col + 1};  // Just outside SA
-    int gate_keeper_row = (current_player == "circle") ? opp_sa_row - 1 : opp_sa_row + 1;  // Row before opponent SA
-    
-    int my_gate_keepers = 0;
-    int ideal_gate_keepers = 2;  // Want one on each side
-    
-    for (int gate_col : gate_keeper_cols) {
-        if (in_bounds(gate_col, gate_keeper_row, rows, cols)) {
-            auto piece = board[gate_keeper_row][gate_col];
-            if (piece && piece->owner == current_player) {
-                my_gate_keepers++;
-                score += 80.0;  // HIGH reward for gate keeper position
+    // Define flow direction: Circle moves UP (-1), Square moves DOWN (+1)
+    int flow_dir = (current_player == "circle") ? -1 : 1; 
+
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < cols; ++c) {
+            auto p = board[r][c];
+            if (p && p->owner == current_player && p->side == "river") {
                 
-                // Extra bonus if it's blocking opponent's path
-                bool blocking_path = false;
-                
-                // Check if opponent has stones nearby trying to score
-                int check_range = 3;
-                for (int dr = -check_range; dr <= check_range; dr++) {
-                    for (int dc = -check_range; dc <= check_range; dc++) {
-                        int check_r = gate_keeper_row + dr;
-                        int check_c = gate_col + dc;
-                        
-                        if (in_bounds(check_c, check_r, rows, cols) && board[check_r][check_c]) {
-                            auto nearby = board[check_r][check_c];
-                            if (nearby->owner == opp && nearby->side == "stone") {
-                                blocking_path = true;
-                                break;
-                            }
+                if (p->orientation == "vertical") {
+                    // Base reward for vertical highway
+                    river_structure_score += 40.0; 
+                    
+                    // CHECK BEHIND: Is a stone ready to enter this river?
+                    // If flow is UP (-1), entry is from r - (-1) = r+1 (Down)
+                    // If flow is DOWN (+1), entry is from r - (+1) = r-1 (Up)
+                    int entry_r = r - flow_dir; 
+                    
+                    if (in_bounds(c, entry_r, rows, cols)) {
+                        auto behind_piece = board[entry_r][c];
+                        if (behind_piece && behind_piece->owner == current_player && behind_piece->side == "stone") {
+                            // MEGA BONUS: Stone is "chambered" in the river
+                            river_structure_score += 300.0; 
                         }
                     }
-                    if (blocking_path) break;
-                }
-                
-                if (blocking_path) {
-                    score += 40.0;  // Extra bonus for actively blocking
-                }
-            }
-        }
-    }
-    
-    // Penalty if we DON'T have gate keepers yet
-    if (my_gate_keepers < ideal_gate_keepers && my_total_in_sa >= 2) {
-        score -= (ideal_gate_keepers - my_gate_keepers) * 50.0;  // Penalty for missing gate keepers
-    }
-    
-    // REWARD UTILIZING SIDE COLUMNS (edges) as alternative fast paths
-    std::vector<int> side_cols = {0, 1, cols - 2, cols - 1};
-    int my_pieces_on_sides = 0;
-    int opp_pieces_on_sides = 0;
-    
-    for (int side_col : side_cols) {
-        bool side_path_clear = true;
-        int my_stones_in_side = 0;
-        
-        for (int r = 0; r < rows; r++) {
-            if (in_bounds(side_col, r, rows, cols) && board[r][side_col]) {
-                auto piece = board[r][side_col];
-                if (piece->owner == current_player) {
-                    if (piece->side == "stone") my_stones_in_side++;
-                } else {
-                    if (r > rows / 3 && r < 2 * rows / 3) {
-                        side_path_clear = false;
+                    
+                    // CHECK AHEAD: Is there another river to extend the highway?
+                    int next_r = r + flow_dir;
+                    if (in_bounds(c, next_r, rows, cols)) {
+                        auto ahead_piece = board[next_r][c];
+                        if (ahead_piece && ahead_piece->owner == current_player && ahead_piece->side == "river" && ahead_piece->orientation == "vertical") {
+                            // CHAIN BONUS: Extended highway
+                            river_structure_score += 150.0;
+                        }
                     }
-                }
-            }
-        }
-        
-        if (side_path_clear && my_stones_in_side > 0) {
-            score += my_stones_in_side * 25.0;
-        }
-        
-        for (int r = 0; r < rows; r++) {
-            if (in_bounds(side_col, r, rows, cols) && board[r][side_col]) {
-                auto piece = board[r][side_col];
-                
-                bool in_offensive_zone = false;
-                if (current_player == "circle" && r < rows / 2) in_offensive_zone = true;
-                if (current_player == "square" && r > rows / 2) in_offensive_zone = true;
-                
-                if (piece->owner == current_player && in_offensive_zone) {
-                    my_pieces_on_sides++;
-                } else if (piece->owner == opp && in_offensive_zone) {
-                    opp_pieces_on_sides++;
+                } else {
+                    // Horizontal rivers are less critical for aggressive attacks
+                    river_structure_score += 10.0; 
                 }
             }
         }
     }
+    score += river_structure_score;
     
-    score += my_pieces_on_sides * 15.0;
-    score -= opp_pieces_on_sides * 18.0;
-    
-    // DEFENSIVE POSITIONING - General defense
-    int defensive_pieces = 0;
-    int defensive_zone_start = (current_player == "circle") ? my_sa_row + 1 : opp_sa_row + 1;
-    int defensive_zone_end = (current_player == "circle") ? opp_sa_row : my_sa_row;
-    
-    for (int row = std::min(defensive_zone_start, defensive_zone_end); 
-         row <= std::max(defensive_zone_start, defensive_zone_end); row++) {
-        for (int col = 0; col < cols; col++) {
-            auto piece = board[row][col];
-            if (piece && piece->owner == current_player) {
-                bool is_blocking_position = false;
-                
-                if (std::find(score_cols.begin(), score_cols.end(), col) != score_cols.end()) {
-                    is_blocking_position = true;
-                }
-                
-                int dist_to_opp_sa = std::abs(row - opp_sa_row);
-                if (dist_to_opp_sa <= 3) {
-                    is_blocking_position = true;
-                }
-                
-                if (is_blocking_position) {
-                    defensive_pieces++;
-                    if (piece->side == "river") score += 15.0;
-                    else score += 12.0;
-                }
-            }
-        }
-    }
-    
-    score += defensive_pieces * 10.0;
-    
-    // Balance offensive/defensive pieces
-    int total_pieces = 0;
-    int offensive_pieces = 0;
-    for (int r = 0; r < rows; r++) {
-        for (int c = 0; c < cols; c++) {
-            auto piece = board[r][c];
-            if (piece && piece->owner == current_player) {
-                total_pieces++;
-                
-                bool in_offensive_zone = false;
-                if (current_player == "circle" && r < rows / 2) in_offensive_zone = true;
-                if (current_player == "square" && r > rows / 2) in_offensive_zone = true;
-                
-                if (in_offensive_zone) offensive_pieces++;
-            }
-        }
-    }
-    
-    // Adjust: want 4-6 offensive (including gate keepers)
-    if (offensive_pieces > 6) score -= (offensive_pieces - 6) * 20.0;
-    if (offensive_pieces < 4 && my_total_in_sa < 2) score -= 30.0;
-    
-    // RIVER NETWORK
+    // Keep generic network heuristic for general connectivity
     std::string phase = get_game_phase(board, rows, cols, score_cols);
     if (phase == "early" || phase == "mid") {
-        score += evaluate_river_network_balanced(board, current_player, rows, cols, score_cols) * 8.0;
+        score += evaluate_river_network_balanced(board, current_player, rows, cols, score_cols) * 20.0;
     }
     
-    // MANHATTAN DISTANCE - prioritize paths to DEEP positions
+    // ---------------------------------------------------------
+    // 4. MANHATTAN DISTANCE (Aggressive Forward Movement)
+    // ---------------------------------------------------------
     double manhattan_score = 0.0;
     for (int row = 0; row < rows; row++) {
         for (int col = 0; col < cols; col++) {
             auto piece = board[row][col];
             if (piece && piece->owner == current_player && piece->side == "stone") {
+                // Don't count stones already in goal (handled by section 1)
                 if (is_own_score_cell(col, row, current_player, rows, cols, score_cols)) continue;
                 
                 int min_dist = std::numeric_limits<int>::max();
@@ -804,91 +620,47 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
                     }
                 }
                 
-                if (min_dist == 1) manhattan_score += 150.0;
-                else if (min_dist == 2) manhattan_score += 80.0;
-                else if (min_dist > 0) manhattan_score += std::max(0, 40 - min_dist * 4);
+                // Exponential reward for getting closer
+                if (min_dist == 1) manhattan_score += 300.0;
+                else if (min_dist == 2) manhattan_score += 150.0;
+                else if (min_dist == 3) manhattan_score += 80.0;
+                else manhattan_score += std::max(0, 50 - min_dist * 5);
             }
         }
     }
-    
     score += manhattan_score;
     
     return score;
 }
 
 // --- (Evaluation helper functions are unchanged) ---
-double StudentAgent::evaluate_edge_control(const Board& board, const std::string& player, 
-                                           int rows, int cols, const std::vector<int>& score_cols) {
-    double edge_score = 0.0;
-    int target_row = (player == "circle") ? top_score_row() : bottom_score_row(rows);
+double StudentAgent::evaluate_edge_control(const Board& board, const std::string& player, int rows, int cols, const std::vector<int>& score_cols) {
+    double edge_score = 0.0; int target_row = (player == "circle") ? top_score_row() : bottom_score_row(rows);
     std::vector<int> edge_cols = {0, 1, cols - 2, cols - 1};
-    
-    // Evaluate control of edge lanes
     for (int col : edge_cols) {
         int start_row = (player == "circle") ? (target_row + 1) : std::max(target_row - 3, 0);
-        int end_row = (player == "circle") ? std::min(target_row + 6, rows) : target_row;
-        
-        int my_pieces_in_lane = 0;
-        int opp_pieces_in_lane = 0;
-        int my_rivers_in_lane = 0;
-        
+        int end_row = (player == "circle") ? std::min(target_row + 4, rows) : target_row;
         for (int row = start_row; row < end_row; ++row) {
             if (in_bounds(col, row, rows, cols)) {
                 auto piece = board[row][col];
                 if (piece) {
                     if (piece->owner == player) {
-                        my_pieces_in_lane++;
-                        if (piece->side == "river") {
-                            my_rivers_in_lane++;
-                            if (piece->orientation == "vertical") {
-                                edge_score += 15.0;  // Vertical river in edge lane
-                            } else {
-                                edge_score += 8.0;
-                            }
-                        } else {
-                            edge_score += 5.0;  // Stone in edge lane
-                        }
-                    } else {
-                        opp_pieces_in_lane++;
-                        edge_score -= 8.0;  // Opponent blocking edge lane
-                    }
+                        edge_score += 1.5;
+                        if (piece->side == "river" && piece->orientation == "horizontal") edge_score += 2.0;
+                    } else edge_score -= 2.0;
                 }
             }
         }
-        
-        // Bonus for dominating an edge lane
-        if (my_pieces_in_lane >= 3 && opp_pieces_in_lane == 0) {
-            edge_score += 25.0;  // Full edge lane control
-        }
-        
-        // Bonus for having river highway in edge lane
-        if (my_rivers_in_lane >= 2) {
-            edge_score += 20.0;  // River chain in edge
-        }
     }
-    
-    // Check for clear edge lanes (no opponent blocking)
-    for (int col : edge_cols) {
-        bool lane_clear = true;
+    for (int col : {0, cols - 1}) {
+        bool lane_blocked = false;
         int start_row = (player == "circle") ? (target_row + 1) : (top_score_row() + 1);
         int end_row = (player == "circle") ? bottom_score_row(rows) : target_row;
-        
         for (int row = start_row; row < end_row; ++row) {
-            if (in_bounds(col, row, rows, cols) && board[row][col]) {
-                if (board[row][col]->owner != player) {
-                    lane_clear = false;
-                    break;
-                }
-            }
+            if (in_bounds(col, row, rows, cols) && board[row][col]) { lane_blocked = true; break; }
         }
-        
-        if (lane_clear) {
-            edge_score += 30.0;  // Clear edge lane to SA
-        } else {
-            edge_score -= 5.0;   // Blocked edge lane
-        }
+        if (!lane_blocked) edge_score -= 3.0;
     }
-    
     return edge_score;
 }
 double StudentAgent::evaluate_defensive_position(const Board& board, const std::string& player, int rows, int cols, const std::vector<int>& score_cols) {
@@ -954,84 +726,29 @@ double StudentAgent::evaluate_balance_factor(const Board& board, const std::stri
     }
     return balance_score;
 }
-double StudentAgent::evaluate_river_network_balanced(const Board& board, const std::string& player, 
-                                                     int rows, int cols, const std::vector<int>& score_cols) {
-    double score = 0.0;
-    std::vector<std::tuple<int, int, PiecePtr>> rivers;
-    
-    // Define edge columns
-    std::vector<int> edge_cols = {0, 1, cols - 2, cols - 1};
-    
+double StudentAgent::evaluate_river_network_balanced(const Board& board, const std::string& player, int rows, int cols, const std::vector<int>& score_cols) {
+    double score = 0.0; std::vector<std::tuple<int, int, PiecePtr>> rivers;
     for (int r = 0; r < rows; ++r) {
         for (int c = 0; c < cols; ++c) {
-            auto p = board[r][c];
-            if (p && p->owner == player && p->side == "river") {
-                rivers.emplace_back(r, c, p);
-            }
+            auto p = board[r][c]; if (p && p->owner == player && p->side == "river") rivers.emplace_back(r, c, p);
         }
     }
-    
-    // Evaluate each river
-    for (auto [r, c, p] : rivers) {
-        bool is_on_edge = std::find(edge_cols.begin(), edge_cols.end(), c) != edge_cols.end();
-        
-        if (is_on_edge) {
-            // EDGE RIVERS are highly valuable
-            if (p->orientation == "vertical") {
-                score += 40.0;  // Vertical river on edge = express highway
-            } else {
-                score += 20.0;  // Horizontal river on edge = feeder
-            }
-        } else {
-            // Center rivers less valuable
-            if (p->orientation == "vertical") {
-                score += 15.0;
-            } else {
-                score += 10.0;
-            }
-        }
-    }
-    
-    // River chains (especially on edges)
     for (size_t i = 0; i < rivers.size(); ++i) {
         auto [r1, c1, p1] = rivers[i];
-        bool edge1 = std::find(edge_cols.begin(), edge_cols.end(), c1) != edge_cols.end();
-        
         for (size_t j = i + 1; j < rivers.size(); ++j) {
             auto [r2, c2, p2] = rivers[j];
-            bool edge2 = std::find(edge_cols.begin(), edge_cols.end(), c2) != edge_cols.end();
-            
-            if (std::abs(r1 - r2) + std::abs(c1 - c2) <= 3) {
-                if (edge1 && edge2) {
-                    score += 25.0;  // Edge river chain = very good
-                } else if (edge1 || edge2) {
-                    score += 15.0;  // One edge river
-                } else {
-                    score += 8.0;   // Center river chain
-                }
-                
-                if (p1->orientation != p2->orientation) {
-                    score += 5.0;  // Perpendicular rivers
-                }
-            }
+            if (std::abs(r1 - r2) + std::abs(c1 - c2) <= 3) { score += 1.0; if (p1->orientation != p2->orientation) score += 0.5; }
         }
     }
-    
-    // Rivers near SA
     int target_row = (player == "circle") ? top_score_row() : bottom_score_row(rows);
     for (auto [r, c, p] : rivers) {
-        bool is_on_edge = std::find(edge_cols.begin(), edge_cols.end(), c) != edge_cols.end();
-        int dist_to_sa = std::abs(r - target_row);
-        
-        if (dist_to_sa <= 3) {
-            if (is_on_edge) {
-                score += 30.0;  // Edge river near SA = perfect
-            } else {
-                score += 15.0;  // Center river near SA
-            }
+        if (player == "circle") {
+            if (r > target_row && r < target_row + 3) { score += 2.0; if (p->orientation == "horizontal") score += 1.0; }
+        } else {
+            if (r < target_row && r > target_row - 3) { score += 2.0; if (p->orientation == "horizontal") score += 1.0; }
         }
+        if (c == 0 || c == 1 || c == cols - 2 || c == cols - 1) score += 1.5;
     }
-    
     return score;
 }
 double StudentAgent::evaluate_manhattan_distances(const Board& board, const std::string& player, int rows, int cols, const std::vector<int>& score_cols) {
@@ -1089,218 +806,62 @@ int StudentAgent::get_move_priority(const Board& board, const Move& move, const 
                                     int rows, int cols, const std::vector<int>& score_cols) {
     int priority = 0;
     
-    std::vector<int> deep_rows;
-    if (current_player == "circle") {
-        deep_rows = {1, 2};
-    } else {
-        deep_rows = {rows - 2, rows - 3};
-    }
-    
-    std::vector<int> side_cols = {0, 1, cols - 2, cols - 1};
-    
-    // Calculate gate keeper positions
-    std::string opp = get_opponent(current_player);
-    int opp_sa_row = (opp == "circle") ? top_score_row() : bottom_score_row(rows);
-    int gate_keeper_row = (current_player == "circle") ? opp_sa_row - 1 : opp_sa_row + 1;
-    
-    int min_score_col = *std::min_element(score_cols.begin(), score_cols.end());
-    int max_score_col = *std::max_element(score_cols.begin(), score_cols.end());
-    std::vector<int> gate_keeper_cols = {min_score_col - 1, max_score_col + 1};
-    
-    // Check how many gate keepers we already have
-    int existing_gate_keepers = 0;
-    for (int gate_col : gate_keeper_cols) {
-        if (in_bounds(gate_col, gate_keeper_row, rows, cols)) {
-            auto piece = board[gate_keeper_row][gate_col];
-            if (piece && piece->owner == current_player) {
-                existing_gate_keepers++;
-            }
+    // Determine rows
+    int my_sa_row = (current_player == "circle") ? top_score_row() : bottom_score_row(rows);
+    int opp_sa_row = (current_player == "circle") ? bottom_score_row(rows) : top_score_row();
+
+    // 1. INSTANT WIN / SCORING (The "Aggressive" part)
+    // If this move puts a stone into our score area -> DO IT IMMEDIATELY
+    if (move.to.first != -1) {
+        if (is_own_score_cell(move.to.first, move.to.second, current_player, rows, cols, score_cols)) {
+             // Check if it's a deep row (safer)
+             int deep_row = (current_player == "circle") ? 1 : rows - 2;
+             if (move.to.second == deep_row || move.to.second == deep_row + ((current_player=="circle")?1:-1)) {
+                 return 1000000; // ABSOLUTE MAX PRIORITY
+             }
+             return 500000; // Still huge priority for shallow score
         }
     }
     
-    // 1. MOVES TO DEEP SCORING POSITIONS (HIGHEST PRIORITY)
-    if (move.to.first != -1 && move.to.second != -1) {
-        bool is_deep_sa = false;
-        for (int deep_row : deep_rows) {
-            if (move.to.second == deep_row && 
-                std::find(score_cols.begin(), score_cols.end(), move.to.first) != score_cols.end()) {
-                is_deep_sa = true;
-                break;
-            }
-        }
-        
-        if (is_deep_sa) {
-            priority += 15000;
-        }
-        else if (is_own_score_cell(move.to.second, move.to.first, current_player, rows, cols, score_cols)) {
-            priority += 8000;
-        }
-    }
-    
-    // 2. NEW: MOVES TO GATE KEEPER POSITIONS (HIGH PRIORITY if we don't have them)
-    if (move.to.first != -1 && move.to.second != -1 && existing_gate_keepers < 2) {
-        bool is_gate_keeper_position = false;
-        
-        for (int gate_col : gate_keeper_cols) {
-            if (move.to.first == gate_col && move.to.second == gate_keeper_row) {
-                is_gate_keeper_position = true;
-                break;
-            }
-        }
-        
-        if (is_gate_keeper_position) {
-            // Check if this gate keeper spot is NOT occupied
-            if (!board[gate_keeper_row][move.to.first]) {
-                priority += 9000;  // VERY HIGH priority if we need gate keepers
-                
-                // Extra priority if opponent has stones nearby
-                bool opp_stones_nearby = false;
-                for (int dr = -2; dr <= 2; dr++) {
-                    for (int dc = -2; dc <= 2; dc++) {
-                        int check_r = gate_keeper_row + dr;
-                        int check_c = move.to.first + dc;
-                        
-                        if (in_bounds(check_c, check_r, rows, cols) && board[check_r][check_c]) {
-                            auto piece = board[check_r][check_c];
-                            if (piece->owner == opp && piece->side == "stone") {
-                                opp_stones_nearby = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (opp_stones_nearby) break;
-                }
-                
-                if (opp_stones_nearby) {
-                    priority += 2000;  // Urgent if opponent is nearby
-                }
-            }
-        }
-        
-        // Also reward moves TOWARD gate keeper positions
-        for (int gate_col : gate_keeper_cols) {
-            int dist_to_gate = manhattan_distance(move.to.second, move.to.first, gate_col, gate_keeper_row);
-            int dist_from_gate = manhattan_distance(move.from.second, move.from.first, gate_col, gate_keeper_row);
-            
-            if (dist_to_gate < dist_from_gate && dist_to_gate <= 2) {
-                priority += (dist_from_gate - dist_to_gate) * 500;  // Reward approaching gate position
-            }
-        }
-    }
-    
-    // 3. BONUS for using SIDE COLUMNS
-    if (move.to.first != -1 && move.to.second != -1) {
-        bool is_side_col = std::find(side_cols.begin(), side_cols.end(), move.to.first) != side_cols.end();
-        
-        if (is_side_col) {
-            int pieces_blocking_side = 0;
-            for (int r = 0; r < rows; r++) {
-                if (board[r][move.to.first] && board[r][move.to.first]->owner != current_player) {
-                    pieces_blocking_side++;
-                }
-            }
-            
-            if (pieces_blocking_side < 2) {
-                int sa_target = (current_player == "circle") ? 0 : rows - 1;
-                int dist_to_sa = std::abs(move.to.second - sa_target);
-                
-                if (dist_to_sa < std::abs(move.from.second - sa_target)) {
-                    priority += 2000;
-                }
-            }
-            
-            bool from_center = (move.from.first >= cols / 3 && move.from.first <= 2 * cols / 3);
-            if (from_center) {
-                priority += 500;
-            }
-        }
-    }
-    
-    // 4. DEFENSIVE PUSH MOVES
+    // 2. PREVENT LOSS (Defensive Pushes)
+    // If we are pushing an opponent piece that is IN or NEAR their score area
     if (move.action == Move::ActionType::PUSH && move.pushed_to.first != -1) {
-        auto piece_at_to = board[move.to.first][move.to.second];
-        if (piece_at_to && piece_at_to->owner != current_player) {
-            int dist_before = std::abs(move.to.second - opp_sa_row);
-            int dist_after = std::abs(move.pushed_to.second - opp_sa_row);
-            
-            if (dist_after > dist_before) {
-                priority += 7000;
-                
-                // Extra bonus if pushing away from gate keeper zone
-                bool near_gate = false;
-                for (int gate_col : gate_keeper_cols) {
-                    if (std::abs(move.to.first - gate_col) <= 2) {
-                        near_gate = true;
-                        break;
-                    }
-                }
-                
-                if (near_gate) {
-                    priority += 1000;  // Extra reward for protecting gate area
-                }
-            } else {
-                priority += 3000;
-            }
-        } else {
-            priority += 2000;
-        }
-    }
-    
-    // 5. MOVES TOWARD DEEP SA POSITIONS
-    if (move.to.first != -1 && move.to.second != -1) {
-        int min_dist_before = std::numeric_limits<int>::max();
-        int min_dist_after = std::numeric_limits<int>::max();
+        auto piece_at_to = board[move.to.first][move.to.second]; // Note: 'to' is where we step, pushing the piece there
+        // Actually, in your code 'to' is the destination of the moving piece.
+        // We need to check the piece occupying 'to' before the move.
+        // But since 'board' is const, we look at board[move.to.second][move.to.first].
         
-        for (int deep_row : deep_rows) {
-            for (int score_col : score_cols) {
-                int dist_from = manhattan_distance(move.from.second, move.from.first, score_col, deep_row);
-                int dist_to = manhattan_distance(move.to.second, move.to.first, score_col, deep_row);
-                min_dist_before = std::min(min_dist_before, dist_from);
-                min_dist_after = std::min(min_dist_after, dist_to);
-            }
-        }
-        
-        if (min_dist_after < min_dist_before) {
-            priority += (min_dist_before - min_dist_after) * 200;
-        }
-    }
-    
-    // 6. DEFENSIVE POSITIONING MOVES
-    if (move.to.first != -1 && move.to.second != -1) {
-        int dist_to_opp_sa = std::abs(move.to.second - opp_sa_row);
-        
-        if (dist_to_opp_sa <= 3) {
-            priority += 400;
-            
-            if (std::find(score_cols.begin(), score_cols.end(), move.to.first) != score_cols.end()) {
-                priority += 600;
-            }
-        }
-    }
-    
-    // 7. RIVER CREATION - BONUS for vertical rivers in SIDE columns
-    if (move.action == Move::ActionType::FLIP) {
-        bool is_side = std::find(side_cols.begin(), side_cols.end(), move.from.first) != side_cols.end();
-        
-        if (is_side && move.orientation == "vertical") {
-            int blockers = 0;
-            for (int r = 0; r < rows; r++) {
-                if (board[r][move.from.first] && board[r][move.from.first]->owner != current_player) {
-                    blockers++;
+        if (in_bounds(move.to.first, move.to.second, rows, cols)) {
+            auto target_piece = board[move.to.second][move.to.first];
+            if (target_piece && target_piece->owner != current_player) {
+                // We are pushing an enemy
+                int dist_to_goal = std::abs(move.to.second - opp_sa_row);
+                if (dist_to_goal <= 2) {
+                    priority += 100000; // CRITICAL DEFENSE: Push them away!
                 }
             }
-            
-            if (blockers < 2) {
-                priority += 800;
-            }
         }
-        
-        priority += 300;
     }
     
-    // 8. KILLER MOVES
-    for (const auto& [depth, killers] : killer_moves) {
-        for (const auto& killer : killers) {
+    // 3. MOVES TOWARD GOAL (Pathfinding)
+    if (move.to.first != -1) {
+        int dist_before = std::abs(move.from.second - my_sa_row);
+        int dist_after = std::abs(move.to.second - my_sa_row);
+        if (dist_after < dist_before) {
+            priority += 5000; // Reward moving forward
+        }
+    }
+    
+    // 4. RIVER SETUP (Vertical is better)
+    if (move.action == Move::ActionType::FLIP || move.action == Move::ActionType::ROTATE) {
+        if (move.orientation == "vertical" || (move.action == Move::ActionType::ROTATE)) {
+            priority += 1000;
+        }
+    }
+    
+    // 5. KILLER MOVES (Search History)
+    if (killer_moves.count(0)) { // Simplified check
+        for (const auto& killer : killer_moves[0]) { // Just check depth 0 or 1 usually
             if (move == killer) {
                 priority += 2000;
                 break;
@@ -1312,24 +873,18 @@ int StudentAgent::get_move_priority(const Board& board, const Move& move, const 
 }
 
 // Add this helper to count offensive vs defensive pieces
-int StudentAgent::count_offensive_pieces(const Board& board, const std::string& player, 
-                                         int rows, int cols) const {
+int StudentAgent::count_offensive_pieces(const Board& board, const std::string& player, int rows, int cols) const {
     int count = 0;
-    std::vector<int> edge_cols = {0, 1, cols - 2, cols - 1};
-    
     for (int r = 0; r < rows; r++) {
         for (int c = 0; c < cols; c++) {
             auto piece = board[r][c];
             if (piece && piece->owner == player) {
-                // Consider pieces in edge lanes as offensive
-                bool in_edge_lane = std::find(edge_cols.begin(), edge_cols.end(), c) != edge_cols.end();
-                
-                // Also consider pieces in opponent's half
+                // Consider pieces in opponent's half as offensive
                 bool in_offensive_zone = false;
                 if (player == "circle" && r < rows / 2) in_offensive_zone = true;
                 if (player == "square" && r > rows / 2) in_offensive_zone = true;
                 
-                if (in_edge_lane || in_offensive_zone) count++;
+                if (in_offensive_zone) count++;
             }
         }
     }
