@@ -639,12 +639,20 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
                         }
                     }
                 } else {
-                    // Horizontal Bridge Logic
-                    score += 15.0;
-                    bool neighbor = false;
-                    if (in_bounds(c-1, r, rows, cols) && board[r][c-1] && board[r][c-1]->owner == current_player) neighbor = true;
-                    if (in_bounds(c+1, r, rows, cols) && board[r][c+1] && board[r][c+1]->owner == current_player) neighbor = true;
-                    if (neighbor) score += 60.0; // Useful bridge
+                    // *** HORIZONTAL BRIDGE & CORNER LOGIC (UPDATED) ***
+                    // Allows stones to switch lanes OR turn corners (Left/Right/Up/Down)
+                    score += 20.0; // Base value
+                    bool useful_connection = false;
+                    
+                    // Check neighbors (Left/Right for bridges, Up/Down for corners)
+                    if (in_bounds(c - 1, r, rows, cols) && board[r][c - 1] && board[r][c - 1]->owner == current_player) useful_connection = true;
+                    if (in_bounds(c + 1, r, rows, cols) && board[r][c + 1] && board[r][c + 1]->owner == current_player) useful_connection = true;
+                    if (in_bounds(c, r - 1, rows, cols) && board[r - 1][c] && board[r - 1][c]->owner == current_player) useful_connection = true;
+                    if (in_bounds(c, r + 1, rows, cols) && board[r + 1][c] && board[r + 1][c]->owner == current_player) useful_connection = true;
+
+                    if (useful_connection) {
+                        score += 150.0; // High value for valid connections
+                    }
                 }
             } 
             else if (p->owner == opp && p->side == "river") {
