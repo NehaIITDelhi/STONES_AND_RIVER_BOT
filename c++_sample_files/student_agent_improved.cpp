@@ -726,6 +726,43 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
         }
     }
     score += manhattan_score;
+
+    // ---------------------------------------------------------
+    // 5. FLANK ATTACK (Use the Green Areas!)
+    // ---------------------------------------------------------
+    // Reward pieces that are using the side lanes to bypass the center jam.
+    double flank_score = 0.0;
+    int center_left = cols / 2 - 2;
+    int center_right = cols / 2 + 2;
+
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < cols; ++c) {
+            auto p = board[r][c];
+            if (p && p->owner == current_player) {
+                bool is_flank = (c < center_left) || (c > center_right);
+                
+                if (is_flank) {
+                    // Base reward for being on the flank
+                    double piece_val = (p->side == "river") ? 15.0 : 10.0;
+                    
+                    // HIGH reward for advancing on the flank
+                    int advancement = 0;
+                    if (current_player == "circle") {
+                        advancement = (rows - 1) - r; // 0 at bottom, high at top
+                    } else {
+                        advancement = r; // 0 at top, high at bottom
+                    }
+                    
+                    // The further advanced, the bigger the bonus
+                    flank_score += piece_val + (advancement * 8.0);
+                } else {
+                    // Slight penalty for clumping in the center columns
+                    flank_score -= 5.0;
+                }
+            }
+        }
+    }
+    score += flank_score;
     
     return score;
 }
