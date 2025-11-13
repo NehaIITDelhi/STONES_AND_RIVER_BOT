@@ -534,202 +534,185 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     std::string opp = get_opponent(current_player);
     double score = 0.0;
     
-    // ---------------------------------------------------------
-    // 1. CRITICAL SCORING & DEFENSE (Aggressive Weights)
-    // ---------------------------------------------------------
+    // Define scoring rows and flow directions
     int my_sa_row = (current_player == "circle") ? top_score_row() : bottom_score_row(rows);
     int opp_sa_row = (opp == "circle") ? top_score_row() : bottom_score_row(rows);
+    int my_flow_dir = (current_player == "circle") ? -1 : 1; 
+    int opp_flow_dir = (opp == "circle") ? -1 : 1;
+
+    // ---------------------------------------------------------
+    // 1. TERMINAL STATE & SCOREBOARD (The Absolute Truth)
+    // ---------------------------------------------------------
+    int my_score_count = 0;
+    int opp_score_count = 0;
     
-    int my_deep_stones = 0;    
-    int my_shallow_stones = 0; 
-    int opp_deep_stones = 0;
-    int opp_shallow_stones = 0;
-    
-    // Analyze Score Areas
+    // Check Score Areas
     for (int col : score_cols) {
-        // Check My Score Area
+        // My Score
         if (in_bounds(col, my_sa_row, rows, cols)) {
             auto piece = board[my_sa_row][col];
             if (piece && piece->owner == current_player && piece->side == "stone") {
-                if (current_player == "circle") {
-                    if (my_sa_row == 2 || my_sa_row == 1) my_deep_stones++;
-                    else my_shallow_stones++;
-                } else {
-                    if (my_sa_row >= rows - 3) my_deep_stones++;
-                    else my_shallow_stones++;
-                }
+                my_score_count++;
+                // Deep stones are slightly better (harder to push out)
+                bool is_deep = (current_player == "circle") ? (my_sa_row < 3) : (my_sa_row > rows - 4);
+                score += is_deep ? 12000.0 : 10000.0;
             }
         }
-        
-        // Check Opponent Score Area
+        // Opponent Score
         if (in_bounds(col, opp_sa_row, rows, cols)) {
             auto piece = board[opp_sa_row][col];
             if (piece && piece->owner == opp && piece->side == "stone") {
-                if (opp == "circle") {
-                    if (opp_sa_row == 2 || opp_sa_row == 1) opp_deep_stones++;
-                    else opp_shallow_stones++;
+                opp_score_count++;
+                score -= 15000.0; // Losing hurts more than winning feels good
+            }
+        }
+    }
+    
+    size_t required = score_cols.size();
+    if (my_score_count >= required) return 1000000.0;
+    if (opp_score_count >= required) return -1000000.0;
+    
+    // Near-win pressure
+    if (my_score_count == required - 1) score += 5000.0;
+    if (opp_score_count == required - 1) score -= 8000.0;
+
+    // ---------------------------------------------------------
+    // 2. THREAT ANALYSIS & GATEKEEPING (New "Pro" Logic)
+    // ---------------------------------------------------------
+    // Identify the "Gate" row (the row just outside the goal)
+    int my_gate_row = my_sa_row - my_flow_dir; // Row before entering my goal
+    int opp_gate_row = opp_sa_row - opp_flow_dir; // Row before entering opp goal
+
+    for (int c : score_cols) {
+        // A. MY GATE CONTROL
+        if (in_bounds(c, my_gate_row, rows, cols)) {
+            auto piece = board[my_gate_row][c];
+            if (piece && piece->owner == current_player && piece->side == "stone") {
+                // I control the entrance! Very good.
+                // Check if the goal slot behind it is empty
+                if (!board[my_sa_row][c]) {
+                    score += 800.0; // "About to score" bonus
                 } else {
-                    if (opp_sa_row >= rows - 3) opp_deep_stones++;
-                    else opp_shallow_stones++;
+                    score -= 200.0; // "Traffic Jam" penalty (blocking myself)
+                }
+            }
+        }
+
+        // B. OPPONENT THREAT DETECTION (Paranoia)
+        if (in_bounds(c, opp_gate_row, rows, cols)) {
+            auto piece = board[opp_gate_row][c];
+            if (piece && piece->owner == opp && piece->side == "stone") {
+                // Opponent is at the door!
+                if (!board[opp_sa_row][c]) {
+                    score -= 2500.0; // PANIC! They are about to score!
                 }
             }
         }
     }
-    
-    // Weights: Prioritize winning above all else
-    score += my_deep_stones * 10000.0;      
-    score += my_shallow_stones * 5000.0;    
-    score -= opp_deep_stones * 15000.0;     
-    score -= opp_shallow_stones * 7000.0;   
-    
-    // Terminal Checks
-    size_t required_stones = score_cols.size();
-    int my_total_score = my_deep_stones + my_shallow_stones;
-    int opp_total_score = opp_deep_stones + opp_shallow_stones;
-    
-    if (my_total_score >= required_stones) return 1000000.0;
-    if (opp_total_score >= required_stones) return -1000000.0;
-    
-    if (my_total_score >= required_stones - 1) score += 2000.0;
-    if (opp_total_score >= required_stones - 1) score -= 3000.0;
-    
-    // ---------------------------------------------------------
-    // 2. DRAFTING (Stones ready to step into Deep SA)
-    // ---------------------------------------------------------
-    int my_pieces_ready_for_deep = 0;
-    int target_deep_rows[2];
-    if (current_player == "circle") {
-        target_deep_rows[0] = 1; target_deep_rows[1] = 2;
-    } else {
-        target_deep_rows[0] = rows - 2; target_deep_rows[1] = rows - 3;
-    }
-    
-    for (int deep_row : target_deep_rows) {
-        int check_row = (current_player == "circle") ? deep_row + 1 : deep_row - 1;
-        if (check_row >= 0 && check_row < rows) {
-            for (int col : score_cols) {
-                if (in_bounds(col, check_row, rows, cols)) {
-                    auto piece = board[check_row][col];
-                    if (piece && piece->owner == current_player && piece->side == "stone") {
-                        if (!board[deep_row][col]) { 
-                            my_pieces_ready_for_deep++;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    score += my_pieces_ready_for_deep * 800.0; 
 
     // ---------------------------------------------------------
-    // 3. RIVER LOGIC: LOADED GUNS & ANTI-GOAL-BLOCKING
+    // 3. RIVER & INFRASTRUCTURE WARFARE
     // ---------------------------------------------------------
-    double river_structure_score = 0.0;
-    int flow_dir = (current_player == "circle") ? -1 : 1; 
-
     for (int r = 0; r < rows; ++r) {
         for (int c = 0; c < cols; ++c) {
             auto p = board[r][c];
-            if (p && p->owner == current_player && p->side == "river") {
-                
+            if (!p) continue;
+
+            if (p->owner == current_player && p->side == "river") {
+                // --- MY RIVERS ---
                 if (p->orientation == "vertical") {
-                    // *** FIX: Penalize rivers ANYWHERE in the Score Area ***
-                    bool is_in_score_area = false;
-                    if (current_player == "circle" && r <= top_score_row()) is_in_score_area = true;
-                    if (current_player == "square" && r >= bottom_score_row(rows)) is_in_score_area = true;
-
-                    if (is_in_score_area) {
-                        // Massive penalty. A river here blocks a point. Flip it!
-                        river_structure_score -= 500.0; 
-                    } else {
-                        river_structure_score += 40.0; // Good highway outside goal
-                    }
+                    // Dead River Check
+                    bool is_dead = (current_player == "circle" && r <= top_score_row()) || 
+                                   (current_player == "square" && r >= bottom_score_row(rows)) ||
+                                   (current_player == "circle" && r == 0) || 
+                                   (current_player == "square" && r == rows - 1);
                     
-                    // A. THE "LOADED GUN" (Bonus for stone BEHIND river)
-                    int entry_r = r - flow_dir; 
+                    if (is_dead) score -= 500.0; // Fix the "Dead River" bug
+                    else score += 40.0;          // Good highway
+
+                    // Loaded Gun Bonus
+                    int entry_r = r - my_flow_dir;
                     if (in_bounds(c, entry_r, rows, cols)) {
-                        auto behind_piece = board[entry_r][c];
-                        if (behind_piece && behind_piece->owner == current_player && behind_piece->side == "stone") {
-                            river_structure_score += 300.0; 
-                        }
-                    }
-
-                    // B. THE "TRAFFIC JAM" (Penalty for stone BLOCKING river)
-                    int next_r = r + flow_dir;
-                    if (in_bounds(c, next_r, rows, cols)) {
-                        bool aiming_at_goal = false;
-                        if (current_player == "circle" && next_r <= top_score_row()) aiming_at_goal = true;
-                        if (current_player == "square" && next_r >= bottom_score_row(rows)) aiming_at_goal = true;
-
-                        if (aiming_at_goal) {
-                            auto blocker = board[next_r][c];
-                            if (blocker && blocker->owner == current_player && blocker->side == "stone") {
-                                river_structure_score -= 200.0; // Penalty! Move it!
-                            }
-                        }
-                        
-                        // Chain Bonus
-                        auto ahead_piece = board[next_r][c];
-                        if (ahead_piece && ahead_piece->owner == current_player && ahead_piece->side == "river" && ahead_piece->orientation == "vertical") {
-                            river_structure_score += 150.0;
+                        auto behind = board[entry_r][c];
+                        if (behind && behind->owner == current_player && behind->side == "stone") {
+                            score += 300.0;
                         }
                     }
                 } else {
-                    river_structure_score += 10.0; 
+                    // Horizontal Bridge Logic
+                    score += 15.0;
+                    bool neighbor = false;
+                    if (in_bounds(c-1, r, rows, cols) && board[r][c-1] && board[r][c-1]->owner == current_player) neighbor = true;
+                    if (in_bounds(c+1, r, rows, cols) && board[r][c+1] && board[r][c+1]->owner == current_player) neighbor = true;
+                    if (neighbor) score += 60.0; // Useful bridge
+                }
+            } 
+            else if (p->owner == opp && p->side == "river") {
+                // --- OPPONENT RIVER DESTRUCTION ---
+                // If opponent has a vertical river, that's bad for me.
+                if (p->orientation == "vertical") {
+                    score -= 100.0; // Penalty for allowing opponent highways
                 }
             }
         }
     }
-    score += river_structure_score;
-    
-    std::string phase = get_game_phase(board, rows, cols, score_cols);
-    if (phase == "early" || phase == "mid") {
-        score += evaluate_river_network_balanced(board, current_player, rows, cols, score_cols) * 20.0;
-    }
-    
+
     // ---------------------------------------------------------
-    // 4. PURE MANHATTAN DISTANCE (Target Specific Empty Slots)
+    // 4. PURE MANHATTAN DISTANCE (Target Empty Slots)
     // ---------------------------------------------------------
     std::vector<std::pair<int, int>> empty_goal_slots;
-    int my_sa_start = (current_player == "circle") ? 0 : rows - 1;
-    int my_sa_end   = (current_player == "circle") ? top_score_row() : bottom_score_row(rows);
-    
-    int start_r = std::min(my_sa_start, my_sa_end);
-    int end_r   = std::max(my_sa_start, my_sa_end);
+    int sa_start_row = (current_player == "circle") ? 0 : rows - 1;
+    int sa_end_row   = (current_player == "circle") ? top_score_row() : bottom_score_row(rows);
+    int iter_start = std::min(sa_start_row, sa_end_row);
+    int iter_end = std::max(sa_start_row, sa_end_row);
 
-    for (int r = start_r; r <= end_r; ++r) {
+    for (int r = iter_start; r <= iter_end; ++r) {
         for (int c : score_cols) {
-            if (in_bounds(c, r, rows, cols)) {
-                if (board[r][c] == nullptr) {
-                    empty_goal_slots.push_back({c, r});
-                }
+            if (in_bounds(c, r, rows, cols) && !board[r][c]) {
+                empty_goal_slots.push_back({c, r});
             }
         }
     }
 
     double manhattan_score = 0.0;
+    int center_left = cols / 2 - 2;
+    int center_right = cols / 2 + 2;
 
-    for (int row = 0; row < rows; row++) {
-        for (int col = 0; col < cols; col++) {
+    for (int row = 0; row < rows; ++row) {
+        for (int col = 0; col < cols; ++col) {
             auto piece = board[row][col];
             if (piece && piece->owner == current_player && piece->side == "stone") {
-                // Ignore stones already in goal (handled in Section 1)
                 if (is_own_score_cell(col, row, current_player, rows, cols, score_cols)) continue;
-                
-                // Find distance to the NEAREST empty slot
+
+                // Flank Attack Bonus
+                bool is_flank = (col < center_left) || (col > center_right);
+                if (is_flank) {
+                    int advancement = (current_player == "circle") ? (rows - 1 - row) : row;
+                    score += 10.0 + (advancement * 8.0);
+                } else {
+                    score -= 5.0; // Discourage center clumping
+                }
+
+                // Dead Zone Penalty (Stuck in corners)
+                bool is_deepest = (current_player == "circle" && row == 0) || (current_player == "square" && row == rows - 1);
+                bool is_outside_goal = std::find(score_cols.begin(), score_cols.end(), col) == score_cols.end();
+                if (is_deepest && is_outside_goal) manhattan_score -= 200.0;
+
+                // Distance to nearest empty slot
                 int min_dist = 10000;
                 for (const auto& goal : empty_goal_slots) {
                     int dist = std::abs(col - goal.first) + std::abs(row - goal.second);
                     if (dist < min_dist) min_dist = dist;
                 }
-
+                
+                // Fallback if full
                 if (empty_goal_slots.empty()) {
-                   int target_row = (current_player == "circle") ? top_score_row() : bottom_score_row(rows);
-                   min_dist = std::abs(row - target_row); 
+                    int tr = (current_player == "circle") ? top_score_row() : bottom_score_row(rows);
+                    min_dist = std::abs(row - tr);
                 }
 
-                if (min_dist == 1) manhattan_score += 400.0;       
-                else if (min_dist == 2) manhattan_score += 200.0;  
+                if (min_dist == 1) manhattan_score += 400.0;
+                else if (min_dist == 2) manhattan_score += 200.0;
                 else if (min_dist == 3) manhattan_score += 100.0;
                 else manhattan_score += std::max(0, 60 - min_dist * 5);
             }
@@ -737,35 +720,6 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     }
     score += manhattan_score;
 
-    // ---------------------------------------------------------
-    // 5. FLANK ATTACK (Use the Green Areas!)
-    // ---------------------------------------------------------
-    double flank_score = 0.0;
-    int center_left = cols / 2 - 2;
-    int center_right = cols / 2 + 2;
-
-    for (int r = 0; r < rows; ++r) {
-        for (int c = 0; c < cols; ++c) {
-            auto p = board[r][c];
-            if (p && p->owner == current_player) {
-                bool is_flank = (c < center_left) || (c > center_right);
-                if (is_flank) {
-                    double piece_val = (p->side == "river") ? 15.0 : 10.0;
-                    int advancement = 0;
-                    if (current_player == "circle") {
-                        advancement = (rows - 1) - r; 
-                    } else {
-                        advancement = r; 
-                    }
-                    flank_score += piece_val + (advancement * 8.0);
-                } else {
-                    flank_score -= 5.0;
-                }
-            }
-        }
-    }
-    score += flank_score;
-    
     return score;
 }
 
