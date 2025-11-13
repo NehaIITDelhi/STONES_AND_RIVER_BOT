@@ -119,12 +119,27 @@ Board StudentAgent::deep_copy_board(const Board& board) {
 // MODIFIED: MAIN SEARCH FUNCTION
 // ===================================================================
 
+// ===================================================================
+// MODIFIED: MAIN SEARCH FUNCTION
+// ===================================================================
+// ===================================================================
+// MODIFIED: MAIN SEARCH FUNCTION
+// ===================================================================
+
+// ===================================================================
+// MODIFIED: MAIN SEARCH FUNCTION
+// ===================================================================
+
+// ===================================================================
+// MODIFIED: MAIN SEARCH FUNCTION (AGGRESSIVE TIME MANAGEMENT)
+// ===================================================================
+
 std::optional<Move> StudentAgent::choose(
     const Board& board, int rows, int cols, const std::vector<int>& score_cols,
     double current_player_time, double opponent_time) 
 {
     // ---------------------------------------------------------
-    // 0. OPENING BOOK: "THE INSTANT RAILGUN"
+    // 0. OPENING BOOK: "THE INSTANT RAILGUN" (UNCHANGED)
     // ---------------------------------------------------------
     if (turn_count == 0) {
         int center_col = cols / 2;
@@ -168,7 +183,7 @@ std::optional<Move> StudentAgent::choose(
     }
 
     // ---------------------------------------------------------
-    // 1. SETUP & HISTORY UPDATE
+    // 1. SETUP & HISTORY UPDATE (UNCHANGED)
     // ---------------------------------------------------------
     start_time_point = std::chrono::high_resolution_clock::now();
     turn_count++; 
@@ -190,19 +205,22 @@ std::optional<Move> StudentAgent::choose(
     if (recent_positions.size() > MAX_HISTORY_SIZE) recent_positions.pop_front();
 
     // ---------------------------------------------------------
-    // 2. SMART TIME MANAGEMENT
+    // 2. SMART TIME MANAGEMENT (MODIFIED)
     // ---------------------------------------------------------
     double time_fraction;
-    if (current_player_time > 60.0) time_fraction = 0.045; 
-    else if (current_player_time > 15.0) time_fraction = 0.06; 
-    else time_fraction = 0.12; 
+    // We use a higher time fraction because the time limit is now severely capped.
+    if (current_player_time > 60.0) time_fraction = 0.05; 
+    else if (current_player_time > 15.0) time_fraction = 0.08; 
+    else time_fraction = 0.15; // Aggressive time fraction for low time
 
     time_limit_seconds = current_player_time * time_fraction;
-    time_limit_seconds = std::min(time_limit_seconds, 2.8); 
+    
+    // **VITAL CHANGE: Cap the search time at 0.8 seconds (or lower) to prevent pauses**
+    time_limit_seconds = std::min(time_limit_seconds, 0.8); 
     if (current_player_time > 1.0) time_limit_seconds = std::max(0.15, time_limit_seconds); 
 
     // ---------------------------------------------------------
-    // 3. MOVE GENERATION & VALIDITY FILTER
+    // 3. MOVE GENERATION & VALIDITY FILTER (UNCHANGED)
     // ---------------------------------------------------------
     auto moves = get_all_valid_moves_enhanced(board, this->player, rows, cols, score_cols);
     
@@ -226,14 +244,14 @@ std::optional<Move> StudentAgent::choose(
     moves = valid_moves;
     if (moves.empty()) return std::nullopt;
 
-    // A. INSTANT WIN CHECK
+    // A. INSTANT WIN CHECK (UNCHANGED)
     for (const auto& move : moves) {
         if (is_winning_move(board, move, this->player, rows, cols, score_cols)) {
             update_move_history(move); return move;
         }
     }
 
-    // B. INSTANT LOSS PREVENTION
+    // B. INSTANT LOSS PREVENTION (UNCHANGED)
     auto opp_moves = get_all_valid_moves_enhanced(board, this->opponent, rows, cols, score_cols);
     for (const auto& opp_move : opp_moves) {
         if (is_winning_move(board, opp_move, this->opponent, rows, cols, score_cols)) {
@@ -245,23 +263,25 @@ std::optional<Move> StudentAgent::choose(
     }
     
     // ---------------------------------------------------------
-    // 4. SEARCH CONFIGURATION
+    // 4. SEARCH CONFIGURATION (MODIFIED DEPTH & WIDTH)
     // ---------------------------------------------------------
     std::string game_phase = get_game_phase(board, rows, cols, score_cols);
     int max_depth;
     
+    // **REDUCED DEPTHS: To prevent long searches**
     if (current_player_time < 5) max_depth = 2;
     else if (current_player_time < 15) max_depth = 3;
-    else if (game_phase == "endgame") max_depth = 6; 
-    else if (game_phase == "midgame") max_depth = 4;
-    else max_depth = 4;
+    else if (game_phase == "endgame") max_depth = 4; // Reduced from 6
+    else if (game_phase == "midgame") max_depth = 3; // Reduced from 4
+    else max_depth = 3; // Reduced from 4
 
     moves = order_moves_with_edge_control(board, moves, this->player, rows, cols, score_cols);
 
+    // **REDUCED WIDTH: Search fewer moves overall**
     int max_moves_to_search;
-    if (current_player_time > 30) max_moves_to_search = 12;
-    else if (current_player_time > 10) max_moves_to_search = 8;
-    else max_moves_to_search = 6;
+    if (current_player_time > 30) max_moves_to_search = 7; // Reduced from 8/12
+    else if (current_player_time > 10) max_moves_to_search = 5; // Reduced from 6/8
+    else max_moves_to_search = 4;
     
     if (moves.size() > max_moves_to_search) moves.resize(max_moves_to_search);
 
@@ -270,7 +290,7 @@ std::optional<Move> StudentAgent::choose(
     double best_score = -std::numeric_limits<double>::infinity();
 
     // ---------------------------------------------------------
-    // 5. ITERATIVE DEEPENING LOOP
+    // 5. ITERATIVE DEEPENING LOOP (UNCHANGED)
     // ---------------------------------------------------------
     for (int depth = 1; depth <= max_depth; ++depth) {
         auto now = std::chrono::high_resolution_clock::now();
@@ -343,6 +363,18 @@ bool StudentAgent::moves_similar(const Move& move1, const Move& move2) const {
 // MODIFIED: NEGAMAX IMPLEMENTATION (WITH FAST REPETITION PENALTY)
 // ===================================================================
 
+// ===================================================================
+// MODIFIED: NEGAMAX IMPLEMENTATION (WITH FAST REPETITION PENALTY)
+// ===================================================================
+
+// ===================================================================
+// MODIFIED: NEGAMAX IMPLEMENTATION (WITH FAST REPETITION PENALTY)
+// ===================================================================
+
+// ===================================================================
+// MODIFIED: NEGAMAX IMPLEMENTATION (WITH FAST REPETITION PENALTY & NARROWER WIDTH)
+// ===================================================================
+
 double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha, double beta,
                                           const std::string& current_player, int rows, int cols, 
                                           const std::vector<int>& score_cols, int max_depth, 
@@ -366,6 +398,7 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
     // --- Time Check ---
     auto now = std::chrono::high_resolution_clock::now();
     double time_spent = std::chrono::duration<double>(now - start_time_point).count();
+    // Search must stop if it exceeds the new, low time limit
     if (time_spent > time_limit_seconds) {
         return evaluate_balanced(board, current_player, rows, cols, score_cols);
     }
@@ -391,9 +424,10 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
     
     moves = order_moves_with_edge_control(board, moves, current_player, rows, cols, score_cols);
 
+    // **MODIFIED: Tighter move width during recursive search**
     int moves_to_search = moves.size();
-    if (depth <= 1) moves_to_search = std::min((int)moves.size(), 5); 
-    else if (depth <= 3) moves_to_search = std::min((int)moves.size(), 10);
+    if (depth <= 1) moves_to_search = std::min((int)moves.size(), 4); 
+    else if (depth <= 3) moves_to_search = std::min((int)moves.size(), 6); // Reduced from 8/10
     
     if (moves.size() > moves_to_search) moves.resize(moves_to_search);
 
@@ -524,9 +558,8 @@ double StudentAgent::quiescence_search(Board& board, double alpha, double beta,
     return best_score;
 }
 
-
 // ===================================================================
-// PHASE-AWARE EVALUATION (Unchanged)
+// PHASE-AWARE EVALUATION (MODIFIED FOR FLANK STRATEGY)
 // ===================================================================
 
 double StudentAgent::evaluate_balanced(const Board& board, const std::string& current_player, 
@@ -539,6 +572,8 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     int opp_sa_row = (opp == "circle") ? top_score_row() : bottom_score_row(rows);
     int my_flow_dir = (current_player == "circle") ? -1 : 1; 
     int opp_flow_dir = (opp == "circle") ? -1 : 1;
+    int outermost_left = 0;
+    int outermost_right = cols - 1;
 
     // ---------------------------------------------------------
     // 1. TERMINAL STATE & SCOREBOARD (The Absolute Truth)
@@ -577,7 +612,7 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     if (opp_score_count == required - 1) score -= 8000.0;
 
     // ---------------------------------------------------------
-    // 2. THREAT ANALYSIS & GATEKEEPING (New "Pro" Logic)
+    // 2. THREAT ANALYSIS & GATEKEEPING (Unchanged)
     // ---------------------------------------------------------
     // Identify the "Gate" row (the row just outside the goal)
     int my_gate_row = my_sa_row - my_flow_dir; // Row before entering my goal
@@ -611,7 +646,7 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     }
 
     // ---------------------------------------------------------
-    // 3. RIVER & INFRASTRUCTURE WARFARE
+    // 3. RIVER & INFRASTRUCTURE WARFARE (MODIFIED for Flank Railgun & Bridges)
     // ---------------------------------------------------------
     for (int r = 0; r < rows; ++r) {
         for (int c = 0; c < cols; ++c) {
@@ -628,9 +663,14 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
                                    (current_player == "square" && r == rows - 1);
                     
                     if (is_dead) score -= 500.0; // Fix the "Dead River" bug
-                    else score += 40.0;          // Good highway
+                    else score += 40.0;          // Base highway
 
-                    // Loaded Gun Bonus
+                    // **NEW: PREMIUM FOR FLANK VERTICAL RIVER (THE RAILGUN)**
+                    if (c == outermost_left || c == outermost_right) {
+                         score += 500.0; 
+                    }
+                    
+                    // Loaded Gun Bonus (Unchanged)
                     int entry_r = r - my_flow_dir;
                     if (in_bounds(c, entry_r, rows, cols)) {
                         auto behind = board[entry_r][c];
@@ -639,34 +679,36 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
                         }
                     }
                 } else {
-                    // *** HORIZONTAL BRIDGE & CORNER LOGIC (UPDATED) ***
-                    // Allows stones to switch lanes OR turn corners (Left/Right/Up/Down)
-                    score += 20.0; // Base value
+                    // *** HORIZONTAL BRIDGE & CORNER LOGIC (UPDATED WITH FLANK BRIDGES) ***
+                    score += 20.0; 
                     bool useful_connection = false;
                     
-                    // Check neighbors (Left/Right for bridges, Up/Down for corners)
                     if (in_bounds(c - 1, r, rows, cols) && board[r][c - 1] && board[r][c - 1]->owner == current_player) useful_connection = true;
                     if (in_bounds(c + 1, r, rows, cols) && board[r][c + 1] && board[r][c + 1]->owner == current_player) useful_connection = true;
                     if (in_bounds(c, r - 1, rows, cols) && board[r - 1][c] && board[r - 1][c]->owner == current_player) useful_connection = true;
                     if (in_bounds(c, r + 1, rows, cols) && board[r + 1][c] && board[r + 1][c]->owner == current_player) useful_connection = true;
 
                     if (useful_connection) {
-                        score += 150.0; // High value for valid connections
+                        score += 150.0; 
+                    }
+                    
+                    // **NEW: PREMIUM FOR HORIZONTAL RIVERS NEXT TO FLANKS (THE BRIDGE)**
+                    if (c == outermost_left + 1 || c == outermost_right - 1) {
+                         score += 350.0; 
                     }
                 }
             } 
             else if (p->owner == opp && p->side == "river") {
-                // --- OPPONENT RIVER DESTRUCTION ---
-                // If opponent has a vertical river, that's bad for me.
+                // --- OPPONENT RIVER DESTRUCTION (Unchanged) ---
                 if (p->orientation == "vertical") {
-                    score -= 100.0; // Penalty for allowing opponent highways
+                    score -= 100.0; 
                 }
             }
         }
     }
 
     // ---------------------------------------------------------
-    // 4. PURE MANHATTAN DISTANCE (Target Empty Slots)
+    // 4. PURE MANHATTAN DISTANCE (MODIFIED for Flank Stone Bonus & Proximity)
     // ---------------------------------------------------------
     std::vector<std::pair<int, int>> empty_goal_slots;
     int sa_start_row = (current_player == "circle") ? 0 : rows - 1;
@@ -683,20 +725,18 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     }
 
     double manhattan_score = 0.0;
-    int center_left = cols / 2 - 2;
-    int center_right = cols / 2 + 2;
-
+    
     for (int row = 0; row < rows; ++row) {
         for (int col = 0; col < cols; ++col) {
             auto piece = board[row][col];
             if (piece && piece->owner == current_player && piece->side == "stone") {
                 if (is_own_score_cell(col, row, current_player, rows, cols, score_cols)) continue;
 
-                // Flank Attack Bonus
-                bool is_flank = (col < center_left) || (col > center_right);
-                if (is_flank) {
+                // **MODIFIED: Flank Attack Bonus**
+                if (col == outermost_left || col == outermost_right) {
                     int advancement = (current_player == "circle") ? (rows - 1 - row) : row;
-                    score += 10.0 + (advancement * 8.0);
+                    // Significantly higher reward for advancing in the fast lane
+                    score += 50.0 + (advancement * 20.0);
                 } else {
                     score -= 5.0; // Discourage center clumping
                 }
@@ -719,7 +759,7 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
                     min_dist = std::abs(row - tr);
                 }
 
-                if (min_dist == 1) manhattan_score += 400.0;
+                if (min_dist == 1) manhattan_score += 800.0; // **INCREASED: Huge bonus for 1 step away**
                 else if (min_dist == 2) manhattan_score += 200.0;
                 else if (min_dist == 3) manhattan_score += 100.0;
                 else manhattan_score += std::max(0, 60 - min_dist * 5);
@@ -900,13 +940,23 @@ double StudentAgent::count_stones_ready_to_score(const Board& board, const std::
 // MOVE ORDERING (Refactored)
 // ===================================================================
 
+// ===================================================================
+// MOVE ORDERING (MODIFIED FOR FLANK STRATEGY)
+// ===================================================================
+
+// ===================================================================
+// MOVE ORDERING (MODIFIED FOR FLANK STRATEGY)
+// ===================================================================
+
 int StudentAgent::get_move_priority(const Board& board, const Move& move, const std::string& current_player,
                                     int rows, int cols, const std::vector<int>& score_cols) {
     int priority = 0;
     
-    // Determine rows
+    // Determine rows and flank columns
     int my_sa_row = (current_player == "circle") ? top_score_row() : bottom_score_row(rows);
     int opp_sa_row = (current_player == "circle") ? bottom_score_row(rows) : top_score_row();
+    int outermost_left = 0;
+    int outermost_right = cols - 1;
 
     // 1. INSTANT WIN / SCORING (The "Aggressive" part)
     // If this move puts a stone into our score area -> DO IT IMMEDIATELY
@@ -922,13 +972,7 @@ int StudentAgent::get_move_priority(const Board& board, const Move& move, const 
     }
     
     // 2. PREVENT LOSS (Defensive Pushes)
-    // If we are pushing an opponent piece that is IN or NEAR their score area
     if (move.action == Move::ActionType::PUSH && move.pushed_to.first != -1) {
-        auto piece_at_to = board[move.to.first][move.to.second]; // Note: 'to' is where we step, pushing the piece there
-        // Actually, in your code 'to' is the destination of the moving piece.
-        // We need to check the piece occupying 'to' before the move.
-        // But since 'board' is const, we look at board[move.to.second][move.to.first].
-        
         if (in_bounds(move.to.first, move.to.second, rows, cols)) {
             auto target_piece = board[move.to.second][move.to.first];
             if (target_piece && target_piece->owner != current_player) {
@@ -941,19 +985,36 @@ int StudentAgent::get_move_priority(const Board& board, const Move& move, const 
         }
     }
     
-    // 3. MOVES TOWARD GOAL (Pathfinding)
-    if (move.to.first != -1) {
-        int dist_before = std::abs(move.from.second - my_sa_row);
-        int dist_after = std::abs(move.to.second - my_sa_row);
-        if (dist_after < dist_before) {
-            priority += 5000; // Reward moving forward
+    // 3. FLANK RAILGUN SETUP & MOVEMENT
+    if (move.action == Move::ActionType::FLIP || move.action == Move::ActionType::ROTATE) {
+        int col = move.from.first;
+        if (col == outermost_left || col == outermost_right) {
+            if (move.orientation == "vertical" || (move.action == Move::ActionType::ROTATE)) {
+                priority += 15000; // HUGE BONUS for setting up the vertical railgun on the edge
+            } else {
+                 priority += 500; // Still a good flip/rotate, but less than vertical
+            }
         }
     }
     
-    // 4. RIVER SETUP (Vertical is better)
-    if (move.action == Move::ActionType::FLIP || move.action == Move::ActionType::ROTATE) {
-        if (move.orientation == "vertical" || (move.action == Move::ActionType::ROTATE)) {
-            priority += 1000;
+    // 4. MOVES TOWARD GOAL (Pathfinding)
+    if (move.to.first != -1) {
+        int dist_before = std::abs(move.from.second - my_sa_row);
+        int dist_after = std::abs(move.to.second - my_sa_row);
+        
+        // This is the one-step lateral move into the scoring column
+        bool is_lateral_score_move = (dist_before == dist_after && std::abs(move.from.first - move.to.first) == 1 && std::find(score_cols.begin(), score_cols.end(), move.to.first) != score_cols.end());
+        
+        if (dist_after < dist_before || is_lateral_score_move) {
+            priority += 5000; // Reward moving forward
+            
+            // Extra push for moving a stone INTO or ALONG the flank
+            int to_col = move.to.first;
+            if (board[move.from.second][move.from.first] && board[move.from.second][move.from.first]->side == "stone") {
+                if (to_col == outermost_left || to_col == outermost_right) {
+                    priority += 8000; // **Major incentive for using the flank**
+                }
+            }
         }
     }
     
@@ -965,6 +1026,11 @@ int StudentAgent::get_move_priority(const Board& board, const Move& move, const 
                 break;
             }
         }
+    }
+    
+    // Default flip/rotate bonus (now lower than flank bonus)
+    if ((move.action == Move::ActionType::FLIP || move.action == Move::ActionType::ROTATE) && priority < 1500) {
+         priority += 1000;
     }
     
     return priority;
