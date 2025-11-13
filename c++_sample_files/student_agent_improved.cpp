@@ -622,7 +622,7 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     score += my_pieces_ready_for_deep * 800.0; 
 
     // ---------------------------------------------------------
-    // 3. RIVER LOGIC: LOADED GUNS & TRAFFIC JAMS
+    // 3. RIVER LOGIC: LOADED GUNS, TRAFFIC JAMS & DEAD RIVERS
     // ---------------------------------------------------------
     double river_structure_score = 0.0;
     int flow_dir = (current_player == "circle") ? -1 : 1; 
@@ -633,7 +633,16 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
             if (p && p->owner == current_player && p->side == "river") {
                 
                 if (p->orientation == "vertical") {
-                    river_structure_score += 40.0; 
+                    // --- CHECK FOR DEAD RIVERS (At the edge of the world) ---
+                    bool is_dead_end = false;
+                    if (current_player == "circle" && r == 0) is_dead_end = true;
+                    if (current_player == "square" && r == rows - 1) is_dead_end = true;
+
+                    if (is_dead_end) {
+                        river_structure_score -= 50.0; // PENALTY! Flip it to score!
+                    } else {
+                        river_structure_score += 40.0; // Useful highway
+                    }
                     
                     // A. THE "LOADED GUN" (Bonus for stone BEHIND river)
                     int entry_r = r - flow_dir; 
@@ -647,7 +656,6 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
                     // B. THE "TRAFFIC JAM" (Penalty for stone BLOCKING river)
                     int next_r = r + flow_dir;
                     if (in_bounds(c, next_r, rows, cols)) {
-                        // Check if river points into Goal Area
                         bool aiming_at_goal = false;
                         if (current_player == "circle" && next_r <= top_score_row()) aiming_at_goal = true;
                         if (current_player == "square" && next_r >= bottom_score_row(rows)) aiming_at_goal = true;
@@ -681,7 +689,6 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     // ---------------------------------------------------------
     // 4. PURE MANHATTAN DISTANCE (Target Specific Empty Slots)
     // ---------------------------------------------------------
-    // Identify all VALID empty spots in the score area.
     std::vector<std::pair<int, int>> empty_goal_slots;
     int my_sa_start = (current_player == "circle") ? 0 : rows - 1;
     int my_sa_end   = (current_player == "circle") ? top_score_row() : bottom_score_row(rows);
@@ -692,7 +699,6 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     for (int r = start_r; r <= end_r; ++r) {
         for (int c : score_cols) {
             if (in_bounds(c, r, rows, cols)) {
-                // If this goal slot is empty, it's a target
                 if (board[r][c] == nullptr) {
                     empty_goal_slots.push_back({c, r});
                 }
@@ -706,25 +712,20 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
         for (int col = 0; col < cols; col++) {
             auto piece = board[row][col];
             if (piece && piece->owner == current_player && piece->side == "stone") {
-                // Ignore stones already in goal (handled in Section 1)
                 if (is_own_score_cell(col, row, current_player, rows, cols, score_cols)) continue;
                 
-                // Find distance to the NEAREST empty slot
                 int min_dist = 10000;
-                
                 for (const auto& goal : empty_goal_slots) {
                     int dist = std::abs(col - goal.first) + std::abs(row - goal.second);
                     if (dist < min_dist) min_dist = dist;
                 }
 
-                // Fallback if no empty slots (should be rare due to win checks)
                 if (empty_goal_slots.empty()) {
                    int target_row = (current_player == "circle") ? top_score_row() : bottom_score_row(rows);
                    min_dist = std::abs(row - target_row); 
                 }
 
-                // Pure Distance Scoring (No directional bias)
-                if (min_dist == 1) manhattan_score += 400.0;       // Adjacent to goal (Even if Up/Side)
+                if (min_dist == 1) manhattan_score += 400.0;       
                 else if (min_dist == 2) manhattan_score += 200.0;  
                 else if (min_dist == 3) manhattan_score += 100.0;
                 else manhattan_score += std::max(0, 60 - min_dist * 5);
@@ -736,7 +737,6 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     // ---------------------------------------------------------
     // 5. FLANK ATTACK (Use the Green Areas!)
     // ---------------------------------------------------------
-    // Reward pieces that are using the side lanes to bypass the center jam.
     double flank_score = 0.0;
     int center_left = cols / 2 - 2;
     int center_right = cols / 2 + 2;
@@ -746,23 +746,16 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
             auto p = board[r][c];
             if (p && p->owner == current_player) {
                 bool is_flank = (c < center_left) || (c > center_right);
-                
                 if (is_flank) {
-                    // Base reward for being on the flank
                     double piece_val = (p->side == "river") ? 15.0 : 10.0;
-                    
-                    // HIGH reward for advancing on the flank
                     int advancement = 0;
                     if (current_player == "circle") {
-                        advancement = (rows - 1) - r; // 0 at bottom, high at top
+                        advancement = (rows - 1) - r; 
                     } else {
-                        advancement = r; // 0 at top, high at bottom
+                        advancement = r; 
                     }
-                    
-                    // The further advanced, the bigger the bonus
                     flank_score += piece_val + (advancement * 8.0);
                 } else {
-                    // Slight penalty for clumping in the center columns
                     flank_score -= 5.0;
                 }
             }
