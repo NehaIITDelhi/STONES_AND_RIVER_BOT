@@ -1,6 +1,6 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h> // This handles optional, vector, and map
-#include "student_agent.h" // <-- Make sure this matches your .h file name
+#include "student_agent_improved.h" // <-- Make sure this matches your .h file name
 #include <sstream> // For string building
 #include <set>
 #include <random>
@@ -20,8 +20,9 @@ std::deque<uint64_t> StudentAgent::recent_positions;
 // CONSTRUCTOR - NOW INITS ZOBRIST
 // ===================================================================
 StudentAgent::StudentAgent(std::string p) : BaseAgent(p), turn_count(0), random_engine(std::random_device{}()) {
-    // We only need to init Zobrist once
-    init_zobrist(20, 20); // Init for max board size
+    init_zobrist(20, 20); 
+    // SPEED UPGRADE: Resize vector ONCE. No dynamic allocation during game.
+    transposition_table.resize(TT_SIZE); 
 }
 
 // ===================================================================
@@ -39,15 +40,18 @@ void StudentAgent::init_zobrist(int rows, int cols) {
 }
 
 int StudentAgent::get_zobrist_index(const PiecePtr& piece) const {
-    if (!piece) return -1; // Should not happen
-    if (piece->owner == "circle") {
-        if (piece->side == "stone") return 0;
-        if (piece->orientation == "horizontal") return 1;
-        return 2; // Vertical
+    if (!piece) return -1; 
+    
+    // MICRO-OPTIMIZATION: Check first char only instead of full string compare
+    // 'c' = circle, 's' = square
+    if (piece->owner[0] == 'c') {
+        if (piece->side[0] == 's') return 0; // stone
+        if (piece->orientation[0] == 'h') return 1; // horizontal
+        return 2; // vertical
     } else {
-        if (piece->side == "stone") return 3;
-        if (piece->orientation == "horizontal") return 4;
-        return 5; // Vertical
+        if (piece->side[0] == 's') return 3; // stone
+        if (piece->orientation[0] == 'h') return 4; // horizontal
+        return 5; // vertical
     }
 }
 
@@ -168,7 +172,8 @@ std::optional<Move> StudentAgent::choose(
     // ---------------------------------------------------------
     start_time_point = std::chrono::high_resolution_clock::now();
     turn_count++; 
-    transposition_table.clear(); 
+    
+    // NOTE: transposition_table.clear() REMOVED to keep memory across turns
 
     uint64_t current_zobrist_hash = board_hash_zobrist(board, rows, cols);
 
@@ -201,14 +206,12 @@ std::optional<Move> StudentAgent::choose(
     // ---------------------------------------------------------
     auto moves = get_all_valid_moves_enhanced(board, this->player, rows, cols, score_cols);
     
-    // *** FIX: Filter out moves that violate History/Repetition Rule ***
     std::vector<Move> valid_moves;
-    Board board_copy_filter = deep_copy_board(board); // Copy for validity check
+    Board board_copy_filter = deep_copy_board(board); 
     for (const auto& move : moves) {
         uint64_t next_hash = current_zobrist_hash;
         UndoInfo undo = apply_move_inplace(board_copy_filter, move, rows, cols, next_hash);
         
-        // Check if this move recreates the exact previous position (Immediate Repetition)
         bool is_repetition = false;
         if (recent_positions.size() >= 2 && next_hash == recent_positions[recent_positions.size() - 2]) {
             is_repetition = true;
@@ -347,16 +350,17 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
 {
     double original_alpha = alpha;
     
-    // --- Transposition Table Lookup ---
-    // (Note: If you upgrade to std::vector or array later, this becomes much faster)
-    if (auto it = transposition_table.find(zobrist_hash); it != transposition_table.end()) {
-        TTEntry& entry = it->second;
-        if (entry.depth >= depth) {
-            if (entry.flag == TTFlag::EXACT) return entry.score;
-            if (entry.flag == TTFlag::LOWER_BOUND) alpha = std::max(alpha, entry.score);
-            else if (entry.flag == TTFlag::UPPER_BOUND) beta = std::min(beta, entry.score);
-            if (alpha >= beta) return entry.score;
-        }
+    // --- Transposition Table Lookup (Array) ---
+    // Bitwise AND for fast modulo on power-of-2 size
+    int tt_idx = zobrist_hash & (TT_SIZE - 1);
+    TTEntry& entry = transposition_table[tt_idx];
+    
+    // Collision check: does the stored key match our current position?
+    if (entry.key == zobrist_hash && entry.depth >= depth) {
+        if (entry.flag == TTFlag::EXACT) return entry.score;
+        if (entry.flag == TTFlag::LOWER_BOUND) alpha = std::max(alpha, entry.score);
+        else if (entry.flag == TTFlag::UPPER_BOUND) beta = std::min(beta, entry.score);
+        if (alpha >= beta) return entry.score;
     }
 
     // --- Time Check ---
@@ -372,8 +376,8 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
     std::string opp = get_opponent(current_player);
     int opp_stones = count_stones_in_score_area(board, opp, rows, cols, score_cols);
     
-    if (my_stones >= required_win_count) return 100000.0 - (max_depth - depth) * 100.0; // Prefer winning sooner
-    if (opp_stones >= required_win_count) return -100000.0 + (max_depth - depth) * 100.0; // Prefer losing later
+    if (my_stones >= required_win_count) return 100000.0 - (max_depth - depth) * 100.0;
+    if (opp_stones >= required_win_count) return -100000.0 + (max_depth - depth) * 100.0;
 
     // --- Quiescence Search at Leaf ---
     if (depth <= 0) {
@@ -382,14 +386,13 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
 
     auto moves = get_all_valid_moves_enhanced(board, current_player, rows, cols, score_cols);
     if (moves.empty()) {
-        return evaluate_balanced(board, current_player, rows, cols, score_cols); // No moves = just eval
+        return evaluate_balanced(board, current_player, rows, cols, score_cols); 
     }
     
     moves = order_moves_with_edge_control(board, moves, current_player, rows, cols, score_cols);
 
-    // Pruning: Only search the top X moves to save time on deep branches
     int moves_to_search = moves.size();
-    if (depth <= 1) moves_to_search = std::min((int)moves.size(), 5); // Very aggressive pruning at leaves
+    if (depth <= 1) moves_to_search = std::min((int)moves.size(), 5); 
     else if (depth <= 3) moves_to_search = std::min((int)moves.size(), 10);
     
     if (moves.size() > moves_to_search) moves.resize(moves_to_search);
@@ -399,30 +402,25 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
     for (int i = 0; i < moves.size(); ++i) {
         UndoInfo undo_data = apply_move_inplace(board, moves[i], rows, cols, zobrist_hash);
         
-        // --- History Redundancy Check ---
+        // History Redundancy Check
         bool found_in_history = false;
         if (recent_positions.size() >= 2 && zobrist_hash == recent_positions[recent_positions.size() - 2]) {
-            found_in_history = true; // Immediate repetition
+            found_in_history = true; 
         }
         
         double score;
         
         if (found_in_history) {
-            score = -9000.0; // Penalize repetition
+            score = -9000.0; 
         } else {
-            // --- PRINCIPAL VARIATION SEARCH (PVS) ---
+            // Principal Variation Search (PVS)
             if (i == 0) {
-                // Full search for the first move (assumed best)
                 score = -negamax_with_balance(board, depth - 1, -beta, -alpha,
                                               opp, rows, cols, score_cols, max_depth, zobrist_hash);
             } else {
-                // Null Window Search: Check if this move is worse than alpha
-                // We search with a closed window (-alpha-1, -alpha)
                 score = -negamax_with_balance(board, depth - 1, -alpha - 1, -alpha,
                                               opp, rows, cols, score_cols, max_depth, zobrist_hash);
                 
-                // If this move is actually better than alpha, we messed up assuming it was bad.
-                // We must re-search with the full window to get the exact score.
                 if (score > alpha && score < beta) {
                     score = -negamax_with_balance(board, depth - 1, -beta, -alpha,
                                                   opp, rows, cols, score_cols, max_depth, zobrist_hash);
@@ -435,7 +433,6 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
         if (score > best_score) best_score = score;
         if (score > alpha) alpha = score;
         if (alpha >= beta) {
-            // Killer Move Heuristic Update
             if (killer_moves.find(depth) == killer_moves.end()) killer_moves[depth] = {};
             auto& killers = killer_moves[depth];
             bool present = false;
@@ -444,15 +441,21 @@ double StudentAgent::negamax_with_balance(Board& board, int depth, double alpha,
                 killers.insert(killers.begin(), moves[i]);
                 if (killers.size() > 2) killers.pop_back();
             }
-            break; // Beta Cutoff
+            break;
         }
     }
 
-    // --- Transposition Table Store ---
-    TTEntry entry = {best_score, depth, TTFlag::EXACT};
-    if (best_score <= original_alpha) entry.flag = TTFlag::UPPER_BOUND;
-    else if (best_score >= beta) entry.flag = TTFlag::LOWER_BOUND;
-    transposition_table[zobrist_hash] = entry;
+    // --- Transposition Table Store (Vector) ---
+    // Store if this path is deeper (better info) or if it's a new entry (collision fix)
+    if (depth >= entry.depth || entry.key != zobrist_hash) {
+        entry.key = zobrist_hash; // Store key for verification
+        entry.score = best_score;
+        entry.depth = depth;
+        
+        if (best_score <= original_alpha) entry.flag = TTFlag::UPPER_BOUND;
+        else if (best_score >= beta) entry.flag = TTFlag::LOWER_BOUND;
+        else entry.flag = TTFlag::EXACT;
+    }
     
     return best_score;
 }
@@ -465,8 +468,11 @@ double StudentAgent::quiescence_search(Board& board, double alpha, double beta,
                                        const std::string& current_player, int rows, int cols,
                                        const std::vector<int>& score_cols, uint64_t& zobrist_hash, int q_depth) 
 {
-    if (auto it = transposition_table.find(zobrist_hash); it != transposition_table.end()) {
-        TTEntry& entry = it->second;
+    // TT Lookup
+    int tt_idx = zobrist_hash & (TT_SIZE - 1);
+    TTEntry& entry = transposition_table[tt_idx];
+    
+    if (entry.key == zobrist_hash) {
         if (entry.flag == TTFlag::EXACT) return entry.score;
         if (entry.flag == TTFlag::LOWER_BOUND) alpha = std::max(alpha, entry.score);
         else if (entry.flag == TTFlag::UPPER_BOUND) beta = std::min(beta, entry.score);
@@ -485,7 +491,7 @@ double StudentAgent::quiescence_search(Board& board, double alpha, double beta,
         return best_score;
     }
     if (best_score >= beta) {
-        return best_score; // Fail-high
+        return best_score; 
     }
     alpha = std::max(alpha, best_score);
     

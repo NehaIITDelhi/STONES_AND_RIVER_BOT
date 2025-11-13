@@ -10,14 +10,13 @@
 #include <set>
 #include <deque>
 #include <algorithm>
-#include <chrono> // For time
-#include <functional> // For std::hash
-#include <limits> // For infinity
-#include <random> // For Zobrist Hashing
-#include <unordered_map>
+#include <chrono> 
+#include <functional> 
+#include <limits> 
+#include <random> 
 
 // ===================================================================
-// HELPER STRUCTURES (Unchanged)
+// HELPER STRUCTURES
 // ===================================================================
 struct Piece {
     std::string owner;
@@ -28,6 +27,7 @@ struct Piece {
 };
 using PiecePtr = std::shared_ptr<Piece>;
 using Board = std::vector<std::vector<PiecePtr>>;
+
 struct Move {
     enum class ActionType { MOVE, PUSH, FLIP, ROTATE };
     ActionType action;
@@ -44,6 +44,7 @@ struct Move {
         return action == other.action && from == other.from && to == other.to && pushed_to == other.pushed_to && orientation == other.orientation;
     }
 };
+
 struct UndoInfo {
     std::pair<int, int> to;
     std::pair<int, int> pushed_to;
@@ -52,15 +53,19 @@ struct UndoInfo {
     std::string original_side;
     std::string original_orientation;
 };
+
 enum class TTFlag { EXACT, LOWER_BOUND, UPPER_BOUND };
+
+// *** UPDATED STRUCT with 'key' ***
 struct TTEntry {
-    double score;
-    int depth;
-    TTFlag flag;
+    uint64_t key = 0; 
+    double score = 0;
+    int depth = -1;
+    TTFlag flag = TTFlag::EXACT;
 };
 
 // ===================================================================
-// BASE AGENT (Unchanged)
+// BASE AGENT
 // ===================================================================
 class BaseAgent {
 public:
@@ -83,10 +88,8 @@ class StudentAgent : public BaseAgent {
 private:
     std::map<int, std::vector<Move>> killer_moves;
     
-    // --- MODIFIED: Storing Zobrist hashes ---
     static std::deque<uint64_t> recent_positions;
     static const int MAX_HISTORY_SIZE = 20;
-    // --- END MODIFIED ---
 
     std::deque<Move> last_moves;
     const int MAX_RECENT_MOVES = 5;
@@ -98,7 +101,11 @@ private:
     // --- Zobrist & Transposition Table ---
     static const int MAX_BOARD_SIZE = 20 * 20;
     static const int NUM_PIECE_TYPES = 6;
-std::unordered_map<uint64_t, TTEntry> transposition_table;
+    
+    // *** UPDATED: Vector instead of Map ***
+    static const int TT_SIZE = 1048576; // 2^20
+    std::vector<TTEntry> transposition_table;
+    
     std::vector<std::vector<uint64_t>> zobrist_table;
     std::mt19937_64 random_engine;
     
@@ -112,10 +119,8 @@ std::unordered_map<uint64_t, TTEntry> transposition_table;
     int top_score_row() const;
     int bottom_score_row(int rows) const;
     bool is_opponent_score_cell(int x, int y, const std::string& p, int rows, int cols, const std::vector<int>& score_cols) const;
-    // Add this line in the private section of StudentAgent class
-int count_offensive_pieces(const Board& board, const std::string& player, int rows, int cols) const;
+    int count_offensive_pieces(const Board& board, const std::string& player, int rows, int cols) const;
     bool is_own_score_cell(int x, int y, const std::string& p, int rows, int cols, const std::vector<int>& score_cols) const;
-    // size_t board_hash(const Board& board) const; // <-- REMOVED slow hash
     int manhattan_distance(int x1, int y1, int x2, int y2) const;
     Board deep_copy_board(const Board& board);
 
