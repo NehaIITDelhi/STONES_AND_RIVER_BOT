@@ -622,7 +622,7 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     score += my_pieces_ready_for_deep * 800.0; 
 
     // ---------------------------------------------------------
-    // 3. RIVER LOGIC: LOADED GUNS, TRAFFIC JAMS & DEAD RIVERS
+    // 3. RIVER LOGIC: LOADED GUNS & ANTI-GOAL-BLOCKING
     // ---------------------------------------------------------
     double river_structure_score = 0.0;
     int flow_dir = (current_player == "circle") ? -1 : 1; 
@@ -633,15 +633,16 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
             if (p && p->owner == current_player && p->side == "river") {
                 
                 if (p->orientation == "vertical") {
-                    // --- CHECK FOR DEAD RIVERS (At the edge of the world) ---
-                    bool is_dead_end = false;
-                    if (current_player == "circle" && r == 0) is_dead_end = true;
-                    if (current_player == "square" && r == rows - 1) is_dead_end = true;
+                    // *** FIX: Penalize rivers ANYWHERE in the Score Area ***
+                    bool is_in_score_area = false;
+                    if (current_player == "circle" && r <= top_score_row()) is_in_score_area = true;
+                    if (current_player == "square" && r >= bottom_score_row(rows)) is_in_score_area = true;
 
-                    if (is_dead_end) {
-                        river_structure_score -= 50.0; // PENALTY! Flip it to score!
+                    if (is_in_score_area) {
+                        // Massive penalty. A river here blocks a point. Flip it!
+                        river_structure_score -= 500.0; 
                     } else {
-                        river_structure_score += 40.0; // Useful highway
+                        river_structure_score += 40.0; // Good highway outside goal
                     }
                     
                     // A. THE "LOADED GUN" (Bonus for stone BEHIND river)
@@ -712,8 +713,10 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
         for (int col = 0; col < cols; col++) {
             auto piece = board[row][col];
             if (piece && piece->owner == current_player && piece->side == "stone") {
+                // Ignore stones already in goal (handled in Section 1)
                 if (is_own_score_cell(col, row, current_player, rows, cols, score_cols)) continue;
                 
+                // Find distance to the NEAREST empty slot
                 int min_dist = 10000;
                 for (const auto& goal : empty_goal_slots) {
                     int dist = std::abs(col - goal.first) + std::abs(row - goal.second);
