@@ -27,8 +27,8 @@ CMAKE_BUILD_TYPE:STRING=
 //Enable/Disable color output during build.
 CMAKE_COLOR_MAKEFILE:BOOL=ON
 
-//No help, variable specified on the command line.
-CMAKE_CXX_COMPILER:UNINITIALIZED=g++
+//CXX compiler
+CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/c++
 
 //Flags used by the CXX compiler during all build types.
 CMAKE_CXX_FLAGS:STRING=
@@ -45,8 +45,8 @@ CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG
 //Flags used by the CXX compiler during RELWITHDEBINFO builds.
 CMAKE_CXX_FLAGS_RELWITHDEBINFO:STRING=-O2 -g -DNDEBUG
 
-//No help, variable specified on the command line.
-CMAKE_C_COMPILER:UNINITIALIZED=gcc
+//C compiler
+CMAKE_C_COMPILER:FILEPATH=/usr/bin/cc
 
 //Flags used by the C compiler during all build types.
 CMAKE_C_FLAGS:STRING=
@@ -246,15 +246,6 @@ PYTHON_LIBRARY:FILEPATH=/opt/homebrew/opt/python@3.13/Frameworks/Python.framewor
 
 //No help, variable specified on the command line.
 pybind11_DIR:UNINITIALIZED=/opt/homebrew/lib/python3.13/site-packages/pybind11/share/cmake/pybind11
-
-//Value Computed by CMake
-student_agent_module_BINARY_DIR:STATIC=/Users/neha/Desktop/Neha_study_material/col333/assignment/A2/c++_sample_files/build
-
-//Value Computed by CMake
-student_agent_module_IS_TOP_LEVEL:STATIC=ON
-
-//Value Computed by CMake
-student_agent_module_SOURCE_DIR:STATIC=/Users/neha/Desktop/Neha_study_material/col333/assignment/A2/c++_sample_files
 
 //Value Computed by CMake
 student_agents_BINARY_DIR:STATIC=/Users/neha/Desktop/Neha_study_material/col333/assignment/A2/c++_sample_files/build

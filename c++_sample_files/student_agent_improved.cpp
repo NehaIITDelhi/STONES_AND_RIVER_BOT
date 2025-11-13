@@ -57,7 +57,10 @@ uint64_t StudentAgent::board_hash_zobrist(const Board& board, int rows, int cols
         for (int c = 0; c < cols; ++c) {
             if (board[r][c]) {
                 int piece_index = get_zobrist_index(board[r][c]);
-                hash ^= zobrist_table[piece_index][r * cols + c];
+                // SAFETY CHECK: Only apply hash if index is valid (-1 indicates invalid/unknown piece)
+                if (piece_index >= 0) {
+                    hash ^= zobrist_table[piece_index][r * cols + c];
+                }
             }
         }
     }
@@ -116,59 +119,118 @@ std::optional<Move> StudentAgent::choose(
     const Board& board, int rows, int cols, const std::vector<int>& score_cols,
     double current_player_time, double opponent_time) 
 {
+    // ---------------------------------------------------------
+    // 0. OPENING BOOK: "THE INSTANT RAILGUN"
+    // ---------------------------------------------------------
+    if (turn_count == 0) {
+        int center_col = cols / 2;
+        int best_r = -1; int best_c = -1; int min_dist_to_center = 10000;
+
+        if (this->player == "circle") {
+            for (int r = 0; r < rows; ++r) {
+                bool found_row = false;
+                for (int c = 0; c < cols; ++c) {
+                    auto p = board[r][c];
+                    if (p && p->owner == this->player && p->side == "stone") {
+                        int dist = std::abs(c - center_col);
+                        if (dist < min_dist_to_center) { min_dist_to_center = dist; best_r = r; best_c = c; }
+                        found_row = true;
+                    }
+                }
+                if (found_row) break; 
+            }
+        } else {
+            for (int r = rows - 1; r >= 0; --r) {
+                bool found_row = false;
+                for (int c = 0; c < cols; ++c) {
+                    auto p = board[r][c];
+                    if (p && p->owner == this->player && p->side == "stone") {
+                        int dist = std::abs(c - center_col);
+                        if (dist < min_dist_to_center) { min_dist_to_center = dist; best_r = r; best_c = c; }
+                        found_row = true;
+                    }
+                }
+                if (found_row) break;
+            }
+        }
+
+        if (best_r != -1) {
+            start_time_point = std::chrono::high_resolution_clock::now();
+            turn_count++;
+            Move opening_move(Move::ActionType::FLIP, std::make_pair(best_c, best_r), "vertical");
+            update_move_history(opening_move);
+            return opening_move;
+        }
+    }
+
+    // ---------------------------------------------------------
+    // 1. SETUP & HISTORY UPDATE
+    // ---------------------------------------------------------
     start_time_point = std::chrono::high_resolution_clock::now();
     turn_count++; 
-    transposition_table.clear();
+    transposition_table.clear(); 
 
     uint64_t current_zobrist_hash = board_hash_zobrist(board, rows, cols);
 
-    // --- HISTORY LOGIC ---
     auto is_starting_board = [&](const Board& b) {
         if (this->player != "circle") return false;
         int piece_count = 0;
-        for (int r = 0; r < rows; ++r) 
-            for (int c = 0; c < cols; ++c) 
-                if (b[r][c]) piece_count++;
+        for (int r = 0; r < rows; ++r) for (int c = 0; c < cols; ++c) if (b[r][c]) piece_count++;
         return (piece_count == 24 || piece_count == 28 || piece_count == 32);
     };
 
-    if (is_starting_board(board)) {
-        recent_positions.clear();
-    }
+    if (is_starting_board(board)) recent_positions.clear();
     
     recent_positions.push_back(current_zobrist_hash); 
-    if (recent_positions.size() > MAX_HISTORY_SIZE) {
-        recent_positions.pop_front();
-    }
+    if (recent_positions.size() > MAX_HISTORY_SIZE) recent_positions.pop_front();
 
-    // --- FIXED TIME MANAGEMENT ---
-    // Use a percentage of remaining time, clamped to safe limits.
+    // ---------------------------------------------------------
+    // 2. SMART TIME MANAGEMENT
+    // ---------------------------------------------------------
     double time_fraction;
-    if (current_player_time > 60.0) time_fraction = 0.04;      // Early game: 4% (approx 2.4s - 4.0s)
-    else if (current_player_time > 10.0) time_fraction = 0.06; // Mid game: 6% (approx 0.6s - 3.6s)
-    else time_fraction = 0.10;                                 // Endgame panic: 10% (approx 0.1s - 1.0s)
+    if (current_player_time > 60.0) time_fraction = 0.045; 
+    else if (current_player_time > 15.0) time_fraction = 0.06; 
+    else time_fraction = 0.12; 
 
     time_limit_seconds = current_player_time * time_fraction;
-    
-    // Safety Clamps:
-    // Never take more than 2.5 seconds (save buffer).
-    // Never take less than 0.2 seconds (unless literally out of time).
-    time_limit_seconds = std::min(time_limit_seconds, 2.5);
-    if (current_player_time > 1.0) {
-        time_limit_seconds = std::max(0.2, time_limit_seconds);
-    }
+    time_limit_seconds = std::min(time_limit_seconds, 2.8); 
+    if (current_player_time > 1.0) time_limit_seconds = std::max(0.15, time_limit_seconds); 
 
+    // ---------------------------------------------------------
+    // 3. MOVE GENERATION & VALIDITY FILTER
+    // ---------------------------------------------------------
     auto moves = get_all_valid_moves_enhanced(board, this->player, rows, cols, score_cols);
+    
+    // *** FIX: Filter out moves that violate History/Repetition Rule ***
+    std::vector<Move> valid_moves;
+    Board board_copy_filter = deep_copy_board(board); // Copy for validity check
+    for (const auto& move : moves) {
+        uint64_t next_hash = current_zobrist_hash;
+        UndoInfo undo = apply_move_inplace(board_copy_filter, move, rows, cols, next_hash);
+        
+        // Check if this move recreates the exact previous position (Immediate Repetition)
+        bool is_repetition = false;
+        if (recent_positions.size() >= 2 && next_hash == recent_positions[recent_positions.size() - 2]) {
+            is_repetition = true;
+        }
+        
+        unapply_move(board_copy_filter, move, undo, rows, cols, next_hash);
+        
+        if (!is_repetition) {
+            valid_moves.push_back(move);
+        }
+    }
+    moves = valid_moves;
     if (moves.empty()) return std::nullopt;
 
-    // Immediate win check
+    // A. INSTANT WIN CHECK
     for (const auto& move : moves) {
         if (is_winning_move(board, move, this->player, rows, cols, score_cols)) {
             update_move_history(move); return move;
         }
     }
 
-    // Immediate loss prevention
+    // B. INSTANT LOSS PREVENTION
     auto opp_moves = get_all_valid_moves_enhanced(board, this->opponent, rows, cols, score_cols);
     for (const auto& opp_move : opp_moves) {
         if (is_winning_move(board, opp_move, this->opponent, rows, cols, score_cols)) {
@@ -179,20 +241,24 @@ std::optional<Move> StudentAgent::choose(
         }
     }
     
+    // ---------------------------------------------------------
+    // 4. SEARCH CONFIGURATION
+    // ---------------------------------------------------------
     std::string game_phase = get_game_phase(board, rows, cols, score_cols);
     int max_depth;
-    if (current_player_time < 5) max_depth = 1;
-    else if (current_player_time < 15) max_depth = 2;
-    else if (game_phase == "endgame") max_depth = 5; // Deeper search in endgame
-    else if (game_phase == "midgame") max_depth = 3;
-    else max_depth = 3;
+    
+    if (current_player_time < 5) max_depth = 2;
+    else if (current_player_time < 15) max_depth = 3;
+    else if (game_phase == "endgame") max_depth = 6; 
+    else if (game_phase == "midgame") max_depth = 4;
+    else max_depth = 4;
 
     moves = order_moves_with_edge_control(board, moves, this->player, rows, cols, score_cols);
 
-    // Adaptive move widening
     int max_moves_to_search;
     if (current_player_time > 30) max_moves_to_search = 12;
-    else max_moves_to_search = 8;
+    else if (current_player_time > 10) max_moves_to_search = 8;
+    else max_moves_to_search = 6;
     
     if (moves.size() > max_moves_to_search) moves.resize(max_moves_to_search);
 
@@ -200,19 +266,20 @@ std::optional<Move> StudentAgent::choose(
     Move best_move = moves[0];
     double best_score = -std::numeric_limits<double>::infinity();
 
-    // Iterative Deepening
+    // ---------------------------------------------------------
+    // 5. ITERATIVE DEEPENING LOOP
+    // ---------------------------------------------------------
     for (int depth = 1; depth <= max_depth; ++depth) {
         auto now = std::chrono::high_resolution_clock::now();
         double time_spent = std::chrono::duration<double>(now - start_time_point).count();
-        if (time_spent > time_limit_seconds * 0.60) break; // Stop earlier to be safe
+        if (time_spent > time_limit_seconds * 0.60) break; 
 
         double alpha = -std::numeric_limits<double>::infinity();
         double beta = std::numeric_limits<double>::infinity();
-        Move current_best;
+        Move current_best_move = moves[0];
         double current_best_score = -std::numeric_limits<double>::infinity();
 
         for (int i = 0; i < moves.size(); ++i) {
-            // Time Check
             now = std::chrono::high_resolution_clock::now();
             time_spent = std::chrono::duration<double>(now - start_time_point).count();
             if (time_spent > time_limit_seconds) break;
@@ -236,17 +303,14 @@ std::optional<Move> StudentAgent::choose(
 
             if (score > current_best_score) {
                 current_best_score = score;
-                current_best = moves[i];
+                current_best_move = moves[i];
             }
             alpha = std::max(alpha, score);
         }
         
-        // Only update best_move if we completed the search or found a vastly superior move
-        if (current_best_score > -90000) { // Filter out panic failures
-            best_move = current_best;
+        if (current_best_score > -90000) { 
+            best_move = current_best_move;
             best_score = current_best_score;
-            
-            // Reorder moves so best is first for next depth
             auto it = std::find(moves.begin(), moves.end(), best_move);
             if (it != moves.end()) {
                 moves.erase(it);
@@ -258,6 +322,7 @@ std::optional<Move> StudentAgent::choose(
     update_move_history(best_move);
     return best_move;
 }
+
 void StudentAgent::update_move_history(const Move& move) {
     last_moves.push_back(move);
     if (last_moves.size() > MAX_RECENT_MOVES) last_moves.pop_front();
@@ -464,7 +529,7 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     double score = 0.0;
     
     // ---------------------------------------------------------
-    // 1. CRITICAL SCORING & DEFENSE (The "Must Win" Logic)
+    // 1. CRITICAL SCORING & DEFENSE (Aggressive Weights)
     // ---------------------------------------------------------
     int my_sa_row = (current_player == "circle") ? top_score_row() : bottom_score_row(rows);
     int opp_sa_row = (opp == "circle") ? top_score_row() : bottom_score_row(rows);
@@ -480,7 +545,6 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
         if (in_bounds(col, my_sa_row, rows, cols)) {
             auto piece = board[my_sa_row][col];
             if (piece && piece->owner == current_player && piece->side == "stone") {
-                // Deep rows are safer/harder to push out
                 if (current_player == "circle") {
                     if (my_sa_row == 2 || my_sa_row == 1) my_deep_stones++;
                     else my_shallow_stones++;
@@ -506,15 +570,13 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
         }
     }
     
-    // AGGRESSIVE SCORING WEIGHTS
-    score += my_deep_stones * 10000.0;      // Massive reward for securing deep spots
-    score += my_shallow_stones * 5000.0;    // High reward for just getting in
+    // Weights: Prioritize winning above all else
+    score += my_deep_stones * 10000.0;      
+    score += my_shallow_stones * 5000.0;    
+    score -= opp_deep_stones * 15000.0;     
+    score -= opp_shallow_stones * 7000.0;   
     
-    // PARANOID DEFENSE
-    score -= opp_deep_stones * 15000.0;     // Panic: Must block deep threats
-    score -= opp_shallow_stones * 7000.0;   // Panic: Must push them out
-    
-    // WIN/LOSS TERMINAL CHECKS
+    // Terminal Checks
     size_t required_stones = score_cols.size();
     int my_total_score = my_deep_stones + my_shallow_stones;
     int opp_total_score = opp_deep_stones + opp_shallow_stones;
@@ -522,7 +584,6 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     if (my_total_score >= required_stones) return 1000000.0;
     if (opp_total_score >= required_stones) return -1000000.0;
     
-    // NEAR-WIN BONUSES (1 stone away)
     if (my_total_score >= required_stones - 1) score += 2000.0;
     if (opp_total_score >= required_stones - 1) score -= 3000.0;
     
@@ -538,16 +599,12 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     }
     
     for (int deep_row : target_deep_rows) {
-        // Look at the row directly in front of the deep slot
         int check_row = (current_player == "circle") ? deep_row + 1 : deep_row - 1;
-        
         if (check_row >= 0 && check_row < rows) {
             for (int col : score_cols) {
                 if (in_bounds(col, check_row, rows, cols)) {
                     auto piece = board[check_row][col];
-                    // If I have a stone waiting there...
                     if (piece && piece->owner == current_player && piece->side == "stone") {
-                        // ...and the deep spot is empty
                         if (!board[deep_row][col]) { 
                             my_pieces_ready_for_deep++;
                         }
@@ -559,11 +616,9 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     score += my_pieces_ready_for_deep * 800.0; 
 
     // ---------------------------------------------------------
-    // 3. AGGRESSIVE RIVER HIGHWAYS ("LOADED GUN" LOGIC)
+    // 3. RIVER LOGIC: LOADED GUNS & TRAFFIC JAMS
     // ---------------------------------------------------------
     double river_structure_score = 0.0;
-    
-    // Define flow direction: Circle moves UP (-1), Square moves DOWN (+1)
     int flow_dir = (current_player == "circle") ? -1 : 1; 
 
     for (int r = 0; r < rows; ++r) {
@@ -572,33 +627,39 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
             if (p && p->owner == current_player && p->side == "river") {
                 
                 if (p->orientation == "vertical") {
-                    // Base reward for vertical highway
                     river_structure_score += 40.0; 
                     
-                    // CHECK BEHIND: Is a stone ready to enter this river?
-                    // If flow is UP (-1), entry is from r - (-1) = r+1 (Down)
-                    // If flow is DOWN (+1), entry is from r - (+1) = r-1 (Up)
+                    // A. THE "LOADED GUN" (Bonus for stone BEHIND river)
                     int entry_r = r - flow_dir; 
-                    
                     if (in_bounds(c, entry_r, rows, cols)) {
                         auto behind_piece = board[entry_r][c];
                         if (behind_piece && behind_piece->owner == current_player && behind_piece->side == "stone") {
-                            // MEGA BONUS: Stone is "chambered" in the river
                             river_structure_score += 300.0; 
                         }
                     }
-                    
-                    // CHECK AHEAD: Is there another river to extend the highway?
+
+                    // B. THE "TRAFFIC JAM" (Penalty for stone BLOCKING river)
                     int next_r = r + flow_dir;
                     if (in_bounds(c, next_r, rows, cols)) {
+                        // Check if river points into Goal Area
+                        bool aiming_at_goal = false;
+                        if (current_player == "circle" && next_r <= top_score_row()) aiming_at_goal = true;
+                        if (current_player == "square" && next_r >= bottom_score_row(rows)) aiming_at_goal = true;
+
+                        if (aiming_at_goal) {
+                            auto blocker = board[next_r][c];
+                            if (blocker && blocker->owner == current_player && blocker->side == "stone") {
+                                river_structure_score -= 200.0; // Penalty! Move it!
+                            }
+                        }
+                        
+                        // Chain Bonus
                         auto ahead_piece = board[next_r][c];
                         if (ahead_piece && ahead_piece->owner == current_player && ahead_piece->side == "river" && ahead_piece->orientation == "vertical") {
-                            // CHAIN BONUS: Extended highway
                             river_structure_score += 150.0;
                         }
                     }
                 } else {
-                    // Horizontal rivers are less critical for aggressive attacks
                     river_structure_score += 10.0; 
                 }
             }
@@ -606,36 +667,61 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     }
     score += river_structure_score;
     
-    // Keep generic network heuristic for general connectivity
     std::string phase = get_game_phase(board, rows, cols, score_cols);
     if (phase == "early" || phase == "mid") {
         score += evaluate_river_network_balanced(board, current_player, rows, cols, score_cols) * 20.0;
     }
     
     // ---------------------------------------------------------
-    // 4. MANHATTAN DISTANCE (Aggressive Forward Movement)
+    // 4. PURE MANHATTAN DISTANCE (Target Specific Empty Slots)
     // ---------------------------------------------------------
+    // Identify all VALID empty spots in the score area.
+    std::vector<std::pair<int, int>> empty_goal_slots;
+    int my_sa_start = (current_player == "circle") ? 0 : rows - 1;
+    int my_sa_end   = (current_player == "circle") ? top_score_row() : bottom_score_row(rows);
+    
+    int start_r = std::min(my_sa_start, my_sa_end);
+    int end_r   = std::max(my_sa_start, my_sa_end);
+
+    for (int r = start_r; r <= end_r; ++r) {
+        for (int c : score_cols) {
+            if (in_bounds(c, r, rows, cols)) {
+                // If this goal slot is empty, it's a target
+                if (board[r][c] == nullptr) {
+                    empty_goal_slots.push_back({c, r});
+                }
+            }
+        }
+    }
+
     double manhattan_score = 0.0;
+
     for (int row = 0; row < rows; row++) {
         for (int col = 0; col < cols; col++) {
             auto piece = board[row][col];
             if (piece && piece->owner == current_player && piece->side == "stone") {
-                // Don't count stones already in goal (handled by section 1)
+                // Ignore stones already in goal (handled in Section 1)
                 if (is_own_score_cell(col, row, current_player, rows, cols, score_cols)) continue;
                 
-                int min_dist = std::numeric_limits<int>::max();
-                for (int deep_row : target_deep_rows) {
-                    for (int score_col : score_cols) {
-                        int dist = manhattan_distance(col, row, score_col, deep_row);
-                        min_dist = std::min(min_dist, dist);
-                    }
-                }
+                // Find distance to the NEAREST empty slot
+                int min_dist = 10000;
                 
-                // Exponential reward for getting closer
-                if (min_dist == 1) manhattan_score += 300.0;
-                else if (min_dist == 2) manhattan_score += 150.0;
-                else if (min_dist == 3) manhattan_score += 80.0;
-                else manhattan_score += std::max(0, 50 - min_dist * 5);
+                for (const auto& goal : empty_goal_slots) {
+                    int dist = std::abs(col - goal.first) + std::abs(row - goal.second);
+                    if (dist < min_dist) min_dist = dist;
+                }
+
+                // Fallback if no empty slots (should be rare due to win checks)
+                if (empty_goal_slots.empty()) {
+                   int target_row = (current_player == "circle") ? top_score_row() : bottom_score_row(rows);
+                   min_dist = std::abs(row - target_row); 
+                }
+
+                // Pure Distance Scoring (No directional bias)
+                if (min_dist == 1) manhattan_score += 400.0;       // Adjacent to goal (Even if Up/Side)
+                else if (min_dist == 2) manhattan_score += 200.0;  
+                else if (min_dist == 3) manhattan_score += 100.0;
+                else manhattan_score += std::max(0, 60 - min_dist * 5);
             }
         }
     }
@@ -975,7 +1061,6 @@ std::optional<Move> StudentAgent::find_blocking_move(const Board& board, const s
 // ===================================================================
 // MAKE/UNMAKE FUNCTIONS (Unchanged)
 // ===================================================================
-
 UndoInfo StudentAgent::apply_move_inplace(Board& board, const Move& move, int rows, int cols, uint64_t& hash) {
     int fr = move.from.second; int fc = move.from.first;
     auto piece = board[fr][fc];
@@ -984,14 +1069,18 @@ UndoInfo StudentAgent::apply_move_inplace(Board& board, const Move& move, int ro
     UndoInfo undo;
     undo.pushed_to = {-1, -1};
     board[fr][fc] = nullptr;
-    hash ^= zobrist_table[piece_idx][from_pos];
+    
+    // Safety Check
+    if (piece_idx >= 0) hash ^= zobrist_table[piece_idx][from_pos];
+
     if (move.action == Move::ActionType::MOVE) {
         int tr = move.to.second; int tc = move.to.first;
         int to_pos = tr * cols + tc;
         undo.to = move.to;
         undo.piece_at_to = board[tr][tc];
         board[tr][tc] = piece;
-        hash ^= zobrist_table[piece_idx][to_pos];
+        // Safety Check
+        if (piece_idx >= 0) hash ^= zobrist_table[piece_idx][to_pos];
     } 
     else if (move.action == Move::ActionType::PUSH) {
         int tr = move.to.second; int tc = move.to.first;
@@ -1005,17 +1094,26 @@ UndoInfo StudentAgent::apply_move_inplace(Board& board, const Move& move, int ro
         undo.piece_at_to = pushed_piece;
         undo.piece_at_pushed_to = board[ptr][ptc];
         undo.original_side = piece->side;
-        hash ^= zobrist_table[pushed_idx][to_pos];
+        
+        // Safety Check for pushed piece removal
+        if (pushed_idx >= 0) hash ^= zobrist_table[pushed_idx][to_pos];
+        
         board[ptr][ptc] = pushed_piece;
-        hash ^= zobrist_table[pushed_idx][pushed_to_pos];
+        
+        // Safety Check for pushed piece placement
+        if (pushed_idx >= 0) hash ^= zobrist_table[pushed_idx][pushed_to_pos];
+        
         board[tr][tc] = piece;
+        
         if (piece->side == "river") {
             piece->side = "stone";
             piece->orientation = "";
             int new_piece_idx = get_zobrist_index(piece);
-            hash ^= zobrist_table[new_piece_idx][to_pos];
+            // Safety Check for transformed piece
+            if (new_piece_idx >= 0) hash ^= zobrist_table[new_piece_idx][to_pos];
         } else {
-            hash ^= zobrist_table[piece_idx][to_pos];
+            // Safety Check
+            if (piece_idx >= 0) hash ^= zobrist_table[piece_idx][to_pos];
         }
     }
     else if (move.action == Move::ActionType::FLIP) {
@@ -1030,14 +1128,16 @@ UndoInfo StudentAgent::apply_move_inplace(Board& board, const Move& move, int ro
         }
         int new_piece_idx = get_zobrist_index(piece);
         board[fr][fc] = piece;
-        hash ^= zobrist_table[new_piece_idx][from_pos];
+        // Safety Check
+        if (new_piece_idx >= 0) hash ^= zobrist_table[new_piece_idx][from_pos];
     }
     else if (move.action == Move::ActionType::ROTATE) {
         undo.original_orientation = piece->orientation;
         piece->orientation = (piece->orientation == "horizontal") ? "vertical" : "horizontal";
         int new_piece_idx = get_zobrist_index(piece);
         board[fr][fc] = piece;
-        hash ^= zobrist_table[new_piece_idx][from_pos];
+        // Safety Check
+        if (new_piece_idx >= 0) hash ^= zobrist_table[new_piece_idx][from_pos];
     }
     return undo;
 }
@@ -1047,9 +1147,15 @@ void StudentAgent::unapply_move(Board& board, const Move& move, const UndoInfo& 
     if (move.action == Move::ActionType::MOVE) {
         int tr = move.to.second; int tc = move.to.first;
         auto piece = board[tr][tc];
-        hash ^= zobrist_table[get_zobrist_index(piece)][tr * cols + tc];
+        
+        int idx_at_to = get_zobrist_index(piece);
+        if (idx_at_to >= 0) hash ^= zobrist_table[idx_at_to][tr * cols + tc];
+        
         board[tr][tc] = undo.piece_at_to;
-        hash ^= zobrist_table[get_zobrist_index(piece)][fr * cols + fc];
+        
+        int idx_at_from = get_zobrist_index(piece);
+        if (idx_at_from >= 0) hash ^= zobrist_table[idx_at_from][fr * cols + fc];
+        
         board[fr][fc] = piece;
     }
     else if (move.action == Move::ActionType::PUSH) {
@@ -1057,22 +1163,41 @@ void StudentAgent::unapply_move(Board& board, const Move& move, const UndoInfo& 
         int ptr = move.pushed_to.second; int ptc = move.pushed_to.first;
         auto moving_piece = board[tr][tc];
         auto pushed_piece = board[ptr][ptc];
-        hash ^= zobrist_table[get_zobrist_index(moving_piece)][tr * cols + tc];
+        
+        int moving_idx = get_zobrist_index(moving_piece);
+        if (moving_idx >= 0) hash ^= zobrist_table[moving_idx][tr * cols + tc];
+        
         board[tr][tc] = undo.piece_at_to;
-        hash ^= zobrist_table[get_zobrist_index(pushed_piece)][tr * cols + tc];
-        hash ^= zobrist_table[get_zobrist_index(pushed_piece)][ptr * cols + ptc];
+        
+        int pushed_idx_old = get_zobrist_index(pushed_piece); // index at 'tr, tc' before move
+        // Note: The piece hasn't changed properties, just position, so get_zobrist_index(pushed_piece) works for both locations
+        if (pushed_idx_old >= 0) hash ^= zobrist_table[pushed_idx_old][tr * cols + tc];
+        
+        int pushed_idx_new = get_zobrist_index(pushed_piece);
+        if (pushed_idx_new >= 0) hash ^= zobrist_table[pushed_idx_new][ptr * cols + ptc];
+        
         board[ptr][ptc] = undo.piece_at_pushed_to;
+        
         moving_piece->side = undo.original_side;
         moving_piece->orientation = undo.original_orientation;
-        hash ^= zobrist_table[get_zobrist_index(moving_piece)][fr * cols + fc];
+        
+        int moving_idx_original = get_zobrist_index(moving_piece);
+        if (moving_idx_original >= 0) hash ^= zobrist_table[moving_idx_original][fr * cols + fc];
+        
         board[fr][fc] = moving_piece;
     }
     else if (move.action == Move::ActionType::FLIP || move.action == Move::ActionType::ROTATE) {
         auto piece = board[fr][fc];
-        hash ^= zobrist_table[get_zobrist_index(piece)][fr * cols + fc];
+        
+        int new_idx = get_zobrist_index(piece);
+        if (new_idx >= 0) hash ^= zobrist_table[new_idx][fr * cols + fc];
+        
         piece->side = undo.original_side;
         piece->orientation = undo.original_orientation;
-        hash ^= zobrist_table[get_zobrist_index(piece)][fr * cols + fc];
+        
+        int old_idx = get_zobrist_index(piece);
+        if (old_idx >= 0) hash ^= zobrist_table[old_idx][fr * cols + fc];
+        
         board[fr][fc] = piece;
     }
 }
@@ -1098,26 +1223,40 @@ std::vector<Move> StudentAgent::get_all_valid_moves_enhanced(const Board& board,
 std::vector<Move> StudentAgent::_get_moves_for_piece(const Board& board, int row, int col, const std::string& player, int rows, int cols, const std::vector<int>& score_cols) const {
     std::vector<Move> moves; auto piece = board[row][col]; std::pair<int,int> from_pos = {col, row};
     int dr[] = {-1, 1, 0, 0}; int dc[] = {0, 0, -1, 1};
+    
     for (int i = 0; i < 4; ++i) {
         int nr = row + dr[i]; int nc = col + dc[i];
+        
+        // Check 1: Cannot move into Opponent's SA
         if (!in_bounds(nc, nr, rows, cols) || is_opponent_score_cell(nc, nr, player, rows, cols, score_cols)) continue;
+        
         auto target_cell = board[nr][nc];
-        if (!target_cell) moves.emplace_back(Move::ActionType::MOVE, from_pos, std::make_pair(nc, nr));
+        if (!target_cell) {
+            moves.emplace_back(Move::ActionType::MOVE, from_pos, std::make_pair(nc, nr));
+        }
         else if (target_cell->side == "river") {
             auto flow_dests = _trace_river_flow(board, nr, nc, player, rows, cols, score_cols);
             for (auto dest : flow_dests) moves.emplace_back(Move::ActionType::MOVE, from_pos, std::make_pair(dest.second, dest.first));
-        } else if (target_cell->side == "stone") {
+        } 
+        else if (target_cell->side == "stone") {
             if (piece->side == "stone") {
+                // STONE PUSHING STONE
                 int pr = nr + dr[i]; int pc = nc + dc[i];
-                if (in_bounds(pc, pr, rows, cols) && !board[pr][pc] && !is_opponent_score_cell(pc, pr, target_cell->owner, rows, cols, score_cols)) {
+                
+                // *** FIX: Use 'player' (ME) to check Opponent Score Cell ***
+                // Previous code used 'target_cell->owner', which incorrectly checked MY Score Cell
+                if (in_bounds(pc, pr, rows, cols) && !board[pr][pc] && !is_opponent_score_cell(pc, pr, player, rows, cols, score_cols)) {
                     moves.emplace_back(Move::ActionType::PUSH, from_pos, std::make_pair(nc, nr), std::make_pair(pc, pr));
                 }
             } else {
-                auto push_dests = _trace_river_push(board, nr, nc, piece, target_cell->owner, rows, cols, score_cols);
+                // RIVER PUSHING STONE
+                // *** FIX: Pass 'player' (ME) so trace logic checks Enemy Goal correctly ***
+                auto push_dests = _trace_river_push(board, nr, nc, piece, player, rows, cols, score_cols);
                 for (auto dest : push_dests) moves.emplace_back(Move::ActionType::PUSH, from_pos, std::make_pair(nc, nr), std::make_pair(dest.second, dest.first));
             }
         }
     }
+    
     if (piece->side == "stone") {
         moves.emplace_back(Move::ActionType::FLIP, from_pos, "horizontal");
         moves.emplace_back(Move::ActionType::FLIP, from_pos, "vertical");
@@ -1203,5 +1342,4 @@ PYBIND11_MODULE(student_agent_module, m) {
              py::arg("score_cols"), py::arg("current_player_time"), 
              py::arg("opponent_time"));
 }
-
 
