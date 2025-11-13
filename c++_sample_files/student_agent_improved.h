@@ -14,6 +14,7 @@
 #include <functional> // For std::hash
 #include <limits> // For infinity
 #include <random> // For Zobrist Hashing
+#include <unordered_map>
 
 // ===================================================================
 // HELPER STRUCTURES (Unchanged)
@@ -97,7 +98,7 @@ private:
     // --- Zobrist & Transposition Table ---
     static const int MAX_BOARD_SIZE = 20 * 20;
     static const int NUM_PIECE_TYPES = 6;
-    std::map<uint64_t, TTEntry> transposition_table;
+std::unordered_map<uint64_t, TTEntry> transposition_table;
     std::vector<std::vector<uint64_t>> zobrist_table;
     std::mt19937_64 random_engine;
     
