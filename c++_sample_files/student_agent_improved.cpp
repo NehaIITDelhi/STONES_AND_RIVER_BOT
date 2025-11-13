@@ -562,6 +562,15 @@ double StudentAgent::quiescence_search(Board& board, double alpha, double beta,
 // PHASE-AWARE EVALUATION (MODIFIED FOR FLANK STRATEGY)
 // ===================================================================
 
+// ===================================================================
+// MODIFIED: PHASE-AWARE EVALUATION
+// (Increased Proximity Bonus for Final Step)
+// ===================================================================
+
+// ===================================================================
+// MODIFIED: PHASE-AWARE EVALUATION (Final Conversion Focus)
+// ===================================================================
+
 double StudentAgent::evaluate_balanced(const Board& board, const std::string& current_player, 
                                        int rows, int cols, const std::vector<int>& score_cols) {
     std::string opp = get_opponent(current_player);
@@ -574,6 +583,10 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     int opp_flow_dir = (opp == "circle") ? -1 : 1;
     int outermost_left = 0;
     int outermost_right = cols - 1;
+    
+    // **NEW DEFINITIONS: Columns next to the flank/score area**
+    int inner_left_col = outermost_left + 1;
+    int inner_right_col = outermost_right - 1;
 
     // ---------------------------------------------------------
     // 1. TERMINAL STATE & SCOREBOARD (The Absolute Truth)
@@ -646,7 +659,7 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     }
 
     // ---------------------------------------------------------
-    // 3. RIVER & INFRASTRUCTURE WARFARE (MODIFIED for Flank Railgun & Bridges)
+    // 3. RIVER & INFRASTRUCTURE WARFARE (Flank Railgun & Bridges)
     // ---------------------------------------------------------
     for (int r = 0; r < rows; ++r) {
         for (int c = 0; c < cols; ++c) {
@@ -662,10 +675,10 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
                                    (current_player == "circle" && r == 0) || 
                                    (current_player == "square" && r == rows - 1);
                     
-                    if (is_dead) score -= 500.0; // Fix the "Dead River" bug
-                    else score += 40.0;          // Base highway
+                    if (is_dead) score -= 500.0; 
+                    else score += 40.0;          
 
-                    // **NEW: PREMIUM FOR FLANK VERTICAL RIVER (THE RAILGUN)**
+                    // PREMIUM FOR FLANK VERTICAL RIVER (THE RAILGUN)
                     if (c == outermost_left || c == outermost_right) {
                          score += 500.0; 
                     }
@@ -679,7 +692,7 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
                         }
                     }
                 } else {
-                    // *** HORIZONTAL BRIDGE & CORNER LOGIC (UPDATED WITH FLANK BRIDGES) ***
+                    // HORIZONTAL BRIDGE & CORNER LOGIC (Flank Bridges)
                     score += 20.0; 
                     bool useful_connection = false;
                     
@@ -692,8 +705,8 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
                         score += 150.0; 
                     }
                     
-                    // **NEW: PREMIUM FOR HORIZONTAL RIVERS NEXT TO FLANKS (THE BRIDGE)**
-                    if (c == outermost_left + 1 || c == outermost_right - 1) {
+                    // PREMIUM FOR HORIZONTAL RIVERS NEXT TO FLANKS (THE BRIDGE)
+                    if (c == inner_left_col || c == inner_right_col) {
                          score += 350.0; 
                     }
                 }
@@ -708,7 +721,7 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
     }
 
     // ---------------------------------------------------------
-    // 4. PURE MANHATTAN DISTANCE (MODIFIED for Flank Stone Bonus & Proximity)
+    // 4. PURE MANHATTAN DISTANCE (MODIFIED PROXIMITY)
     // ---------------------------------------------------------
     std::vector<std::pair<int, int>> empty_goal_slots;
     int sa_start_row = (current_player == "circle") ? 0 : rows - 1;
@@ -732,7 +745,7 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
             if (piece && piece->owner == current_player && piece->side == "stone") {
                 if (is_own_score_cell(col, row, current_player, rows, cols, score_cols)) continue;
 
-                // **MODIFIED: Flank Attack Bonus**
+                // Flank Attack Bonus
                 if (col == outermost_left || col == outermost_right) {
                     int advancement = (current_player == "circle") ? (rows - 1 - row) : row;
                     // Significantly higher reward for advancing in the fast lane
@@ -759,9 +772,10 @@ double StudentAgent::evaluate_balanced(const Board& board, const std::string& cu
                     min_dist = std::abs(row - tr);
                 }
 
-                if (min_dist == 1) manhattan_score += 800.0; // **INCREASED: Huge bonus for 1 step away**
-                else if (min_dist == 2) manhattan_score += 200.0;
-                else if (min_dist == 3) manhattan_score += 100.0;
+                // **INCREASED BONUS FOR ONE STEP AWAY, FORCING CONVERSION**
+                if (min_dist == 1) manhattan_score += 1500.0; // Increased from 800.0
+                else if (min_dist == 2) manhattan_score += 400.0; // Increased from 200.0
+                else if (min_dist == 3) manhattan_score += 200.0; // Increased from 100.0
                 else manhattan_score += std::max(0, 60 - min_dist * 5);
             }
         }
@@ -948,6 +962,15 @@ double StudentAgent::count_stones_ready_to_score(const Board& board, const std::
 // MOVE ORDERING (MODIFIED FOR FLANK STRATEGY)
 // ===================================================================
 
+// ===================================================================
+// MODIFIED: MOVE ORDERING 
+// (High Priority for Lateral Scoring Moves and Pushes)
+// ===================================================================
+
+// ===================================================================
+// MODIFIED: MOVE ORDERING (High Priority for Lateral Scoring Moves and Pushes)
+// ===================================================================
+
 int StudentAgent::get_move_priority(const Board& board, const Move& move, const std::string& current_player,
                                     int rows, int cols, const std::vector<int>& score_cols) {
     int priority = 0;
@@ -968,6 +991,13 @@ int StudentAgent::get_move_priority(const Board& board, const Move& move, const 
                  return 1000000; // ABSOLUTE MAX PRIORITY
              }
              return 500000; // Still huge priority for shallow score
+        }
+    }
+    
+    // Check for PUSH moves that score a stone
+    if (move.action == Move::ActionType::PUSH && move.pushed_to.first != -1) {
+        if (is_own_score_cell(move.pushed_to.first, move.pushed_to.second, current_player, rows, cols, score_cols)) {
+             return 800000; // **High priority: River Push to score a stone**
         }
     }
     
@@ -1002,17 +1032,22 @@ int StudentAgent::get_move_priority(const Board& board, const Move& move, const 
         int dist_before = std::abs(move.from.second - my_sa_row);
         int dist_after = std::abs(move.to.second - my_sa_row);
         
-        // This is the one-step lateral move into the scoring column
-        bool is_lateral_score_move = (dist_before == dist_after && std::abs(move.from.first - move.to.first) == 1 && std::find(score_cols.begin(), score_cols.end(), move.to.first) != score_cols.end());
+        // This checks if the move lands the piece in one of the central scoring columns
+        bool moves_into_scoring_column = (std::find(score_cols.begin(), score_cols.end(), move.to.first) != score_cols.end());
         
-        if (dist_after < dist_before || is_lateral_score_move) {
-            priority += 5000; // Reward moving forward
+        // This is the one-step lateral move into the scoring column from the flank/gate
+        bool is_final_lateral_move = moves_into_scoring_column && (std::abs(move.from.first - move.to.first) == 1 || std::abs(move.from.second - move.to.second) == 1);
+        
+        if (is_final_lateral_move) {
+             priority += 100000; // **ABSOLUTE PRIORITY: CONVERTING FLANK TO GOAL THREAT** (Increased from 60000)
+        } else if (dist_after < dist_before) {
+            priority += 5000; // Reward moving strictly forward (axial)
             
             // Extra push for moving a stone INTO or ALONG the flank
             int to_col = move.to.first;
             if (board[move.from.second][move.from.first] && board[move.from.second][move.from.first]->side == "stone") {
                 if (to_col == outermost_left || to_col == outermost_right) {
-                    priority += 8000; // **Major incentive for using the flank**
+                    priority += 8000; // Major incentive for using the flank
                 }
             }
         }
@@ -1035,7 +1070,6 @@ int StudentAgent::get_move_priority(const Board& board, const Move& move, const 
     
     return priority;
 }
-
 // Add this helper to count offensive vs defensive pieces
 int StudentAgent::count_offensive_pieces(const Board& board, const std::string& player, int rows, int cols) const {
     int count = 0;
